@@ -87,6 +87,12 @@ SettingsDialog::SettingsDialog(GladeSearchpath* gladeSearchPath, Settings* setti
             builder.get("cbAutosave"), "toggled",
             G_CALLBACK(+[](SettingsDialog* self) { self->enableWithCheckbox("cbAutosave", "boxAutosave"); }), this);
 
+    g_signal_connect_swapped(
+            builder.get("cbStrokeHoldRecognizerEnabled"), "toggled", G_CALLBACK(+[](SettingsDialog* self) {
+                self->enableWithCheckbox("cbStrokeHoldRecognizerEnabled", "boxStrokeHoldRecognizerDelay");
+            }),
+            this);
+
     g_signal_connect_swapped(builder.get("cbIgnoreFirstStylusEvents"), "toggled", G_CALLBACK(+[](SettingsDialog* self) {
                                  self->enableWithCheckbox("cbIgnoreFirstStylusEvents", "spNumIgnoredStylusEvents");
                              }),
@@ -346,6 +352,7 @@ void SettingsDialog::load() {
     loadCheckbox("cbDoActionOnStrokeFiltered", settings->getDoActionOnStrokeFiltered());
     loadCheckbox("cbTrySelectOnStrokeFiltered", settings->getTrySelectOnStrokeFiltered());
     loadCheckbox("cbSnapRecognizedShapesEnabled", settings->getSnapRecognizedShapesEnabled());
+    loadCheckbox("cbStrokeHoldRecognizerEnabled", settings->getStrokeHoldRecognizerEnabled());
     loadCheckbox("cbRestoreLineWidthEnabled", settings->getRestoreLineWidthEnabled());
     loadCheckbox("cbStockIcons", settings->areStockIconsUsed());
     loadCheckbox("cbHideHorizontalScrollbar", settings->getScrollbarHideType() & SCROLLBAR_HIDE_HORIZONTAL);
@@ -435,6 +442,8 @@ void SettingsDialog::load() {
 
     GtkWidget* spStrokeRecognizerMinSize = builder.get("spStrokeRecognizerMinSize");
     gtk_spin_button_set_value(GTK_SPIN_BUTTON(spStrokeRecognizerMinSize), settings->getStrokeRecognizerMinSize());
+    gtk_spin_button_set_value(GTK_SPIN_BUTTON(builder.get("spStrokeHoldRecognizerDelay")),
+                              static_cast<double>(settings->getStrokeHoldRecognizerDelay()));
 
     gtk_spin_button_set_value(GTK_SPIN_BUTTON(builder.get("edgePanSpeed")), settings->getEdgePanSpeed());
     gtk_spin_button_set_value(GTK_SPIN_BUTTON(builder.get("edgePanMaxMult")), settings->getEdgePanMaxMult());
@@ -629,6 +638,7 @@ void SettingsDialog::load() {
 
     enableWithCheckbox("cbAutosave", "boxAutosave");
     enableWithCheckbox("cbIgnoreFirstStylusEvents", "spNumIgnoredStylusEvents");
+    enableWithCheckbox("cbStrokeHoldRecognizerEnabled", "boxStrokeHoldRecognizerDelay");
     enableWithEnabledCheckbox("cbAddVerticalSpace", "spAddVerticalSpaceAbove");
     enableWithEnabledCheckbox("cbAddHorizontalSpace", "spAddHorizontalSpaceRight");
     enableWithEnabledCheckbox("cbAddVerticalSpace", "spAddVerticalSpaceBelow");
@@ -751,6 +761,7 @@ void SettingsDialog::save() {
     settings->setDoActionOnStrokeFiltered(getCheckbox("cbDoActionOnStrokeFiltered"));
     settings->setTrySelectOnStrokeFiltered(getCheckbox("cbTrySelectOnStrokeFiltered"));
     settings->setSnapRecognizedShapesEnabled(getCheckbox("cbSnapRecognizedShapesEnabled"));
+    settings->setStrokeHoldRecognizerEnabled(getCheckbox("cbStrokeHoldRecognizerEnabled"));
     settings->setRestoreLineWidthEnabled(getCheckbox("cbRestoreLineWidthEnabled"));
     settings->setAreStockIconsUsed(getCheckbox("cbStockIcons"));
     settings->setPressureGuessingEnabled(getCheckbox("cbEnablePressureInference"));
@@ -1040,6 +1051,8 @@ void SettingsDialog::save() {
 
     settings->setStrokeRecognizerMinSize(
             static_cast<double>(gtk_spin_button_get_value(GTK_SPIN_BUTTON(builder.get("spStrokeRecognizerMinSize")))));
+    settings->setStrokeHoldRecognizerDelay(static_cast<unsigned int>(
+            gtk_spin_button_get_value_as_int(GTK_SPIN_BUTTON(builder.get("spStrokeHoldRecognizerDelay")))));
 
 #ifdef ENABLE_AUDIO
     auto file = gtk_file_chooser_get_file(GTK_FILE_CHOOSER(builder.get("fcAudioPath")));

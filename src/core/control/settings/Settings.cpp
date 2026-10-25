@@ -235,6 +235,8 @@ void Settings::loadDefault() {
     this->trySelectOnStrokeFiltered = false;
 
     this->snapRecognizedShapesEnabled = false;
+    this->strokeHoldRecognizerEnabled = false;
+    this->strokeHoldRecognizerDelay = 600;
     this->restoreLineWidthEnabled = false;
 
     this->inTransaction = false;
@@ -688,6 +690,11 @@ void Settings::parseItem(xmlDocPtr doc, xmlNodePtr cur) {
         this->latexSettings.temporaryFileExt = std::string{reinterpret_cast<char*>(value)};
     } else if (xmlStrcmp(name, reinterpret_cast<const xmlChar*>("snapRecognizedShapesEnabled")) == 0) {
         this->snapRecognizedShapesEnabled = xmlStrcmp(value, reinterpret_cast<const xmlChar*>("true")) == 0;
+    } else if (xmlStrcmp(name, reinterpret_cast<const xmlChar*>("strokeHoldRecognizerEnabled")) == 0) {
+        this->strokeHoldRecognizerEnabled = xmlStrcmp(value, reinterpret_cast<const xmlChar*>("true")) == 0;
+    } else if (xmlStrcmp(name, reinterpret_cast<const xmlChar*>("strokeHoldRecognizerDelay")) == 0) {
+        this->strokeHoldRecognizerDelay =
+                static_cast<unsigned int>(g_ascii_strtoull(reinterpret_cast<const char*>(value), nullptr, 10));
     } else if (xmlStrcmp(name, reinterpret_cast<const xmlChar*>("restoreLineWidthEnabled")) == 0) {
         this->restoreLineWidthEnabled = xmlStrcmp(value, reinterpret_cast<const xmlChar*>("true")) == 0;
     } else if (xmlStrcmp(name, reinterpret_cast<const xmlChar*>("preferredLocale")) == 0) {
@@ -1168,6 +1175,8 @@ void Settings::save() {
     SAVE_BOOL_PROP(trySelectOnStrokeFiltered);
 
     SAVE_BOOL_PROP(snapRecognizedShapesEnabled);
+    SAVE_BOOL_PROP(strokeHoldRecognizerEnabled);
+    SAVE_UINT_PROP(strokeHoldRecognizerDelay);
     SAVE_BOOL_PROP(restoreLineWidthEnabled);
 
     SAVE_INT_PROP(numIgnoredStylusEvents);
@@ -2320,6 +2329,14 @@ auto Settings::getTrySelectOnStrokeFiltered() const -> bool { return this->trySe
 void Settings::setSnapRecognizedShapesEnabled(bool enabled) { this->snapRecognizedShapesEnabled = enabled; }
 
 auto Settings::getSnapRecognizedShapesEnabled() const -> bool { return this->snapRecognizedShapesEnabled; }
+
+void Settings::setStrokeHoldRecognizerEnabled(bool enabled) { this->strokeHoldRecognizerEnabled = enabled; }
+
+auto Settings::getStrokeHoldRecognizerEnabled() const -> bool { return this->strokeHoldRecognizerEnabled; }
+
+void Settings::setStrokeHoldRecognizerDelay(unsigned int timeInMs) { this->strokeHoldRecognizerDelay = timeInMs; }
+
+auto Settings::getStrokeHoldRecognizerDelay() const -> unsigned int { return this->strokeHoldRecognizerDelay; }
 
 
 void Settings::setRestoreLineWidthEnabled(bool enabled) { this->restoreLineWidthEnabled = enabled; }

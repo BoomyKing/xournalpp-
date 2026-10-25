@@ -1,7 +1,7 @@
 #include "StrokeHandler.h"
 
 #include <algorithm>  // for max, min
-#include <cmath>      // for ceil, pow, abs
+#include <cmath>      // for ceil, pow, abs, hypot, atan2, remainder
 #include <limits>     // for numeric_limits
 #include <memory>     // for unique_ptr, mak...
 #include <utility>    // for move
@@ -66,8 +66,115 @@ auto StrokeHandler::onMotionNotifyEvent(const PositionInputData& pos, double zoo
         return true;
     }
 
+    const Point penPos(pos.x / zoom, pos.y / zoom);
+    if (heldShape) {
+        // The stroke has been recognized: the shape follows the pen until it is lifted
+        updateHeldShape(penPos);
+        return true;
+    }
+
     stabilizer->processEvent(pos);
+
+    if (holdRecognitionActive()) {
+        holdZoom = zoom;
+        watchForHold(penPos);
+    }
     return true;
+}
+
+auto StrokeHandler::holdRecognitionActive() const -> bool {
+    if (!allowsHoldRecognition() || !stroke) {
+        return false;
+    }
+    const StrokeTool tool = stroke->getToolType();
+    return (tool == StrokeTool::PEN || tool == StrokeTool::HIGHLIGHTER) &&
+           control->getSettings()->getStrokeHoldRecognizerEnabled();
+}
+
+void StrokeHandler::watchForHold(const Point& penPos) {
+    lastPenPoint = penPos;
+    // Small movements (hand tremor, sensor noise) still count as holding still
+    if (holdTimer && penPos.lineLengthTo(holdWatchPoint) * holdZoom <= HOLD_TOLERANCE) {
+        return;
+    }
+    holdWatchPoint = penPos;
+    holdTimer = g_timeout_add(static_cast<guint>(control->getSettings()->getStrokeHoldRecognizerDelay()),
+                              xoj::util::wrap_for_once_v<onHoldTimeout>, this);
+}
+
+void StrokeHandler::onHoldTimeout(StrokeHandler* self) {
+    self->holdTimer.consume();
+    self->recognizeHeldStroke();
+}
+
+void StrokeHandler::recognizeHeldStroke() {
+    if (!stroke || heldShape) {
+        return;
+    }
+    ShapeRecognizer reco;
+    auto recognized = reco.recognizePatterns(stroke.get(), control->getSettings()->getStrokeRecognizerMinSize());
+    if (!recognized || recognized->getPointCount() < 2) {
+        return;  // Not a shape: keep drawing freehand
+    }
+    recognized->setWidth(stroke->hasPressure() ? stroke->getAvgPressure() : stroke->getWidth());
+
+    heldShapeGrab = lastPenPoint;
+    heldShapeIsLine = recognized->getPointCount() == 2;
+    if (heldShapeIsLine) {
+        // The line starts where the stroke started, its other end follows the pen
+        const Point& start = stroke->getPoint(0);
+        heldShapeBase = {Point(start.x, start.y), Point(lastPenPoint.x, lastPenPoint.y)};
+    } else {
+        heldShapeBase = recognized->getPointVector();
+        const auto box = recognized->boundingRect();
+        heldShapeCenter = Point(box.x + box.width / 2, box.y + box.height / 2);
+    }
+
+    const Range oldRange(stroke->boundingRect());
+    heldShape = std::move(recognized);
+    updateHeldShape(lastPenPoint, oldRange);
+}
+
+void StrokeHandler::updateHeldShape(const Point& penPos) { updateHeldShape(penPos, Range(heldShape->boundingRect())); }
+
+void StrokeHandler::updateHeldShape(const Point& penPos, Range repaint) {
+    std::vector<Point> pts;
+    pts.reserve(heldShapeBase.size());
+    if (heldShapeIsLine) {
+        const Point& start = heldShapeBase.front();
+        // Same snapping as the line tool: rotation snapping and/or grid snapping, depending on the settings
+        const Point end = snappingHandler.snap(penPos, start, false);
+        pts.emplace_back(start.x, start.y);
+        pts.emplace_back(end.x, end.y);
+    } else {
+        // Scale and rotate around the centre so that the point grabbed at recognition follows the pen
+        const double gx = heldShapeGrab.x - heldShapeCenter.x;
+        const double gy = heldShapeGrab.y - heldShapeCenter.y;
+        const double px = penPos.x - heldShapeCenter.x;
+        const double py = penPos.y - heldShapeCenter.y;
+        const double r0 = std::hypot(gx, gy);
+        const double r1 = std::hypot(px, py);
+        double scale = 1.0;
+        double angle = 0.0;
+        if (r0 > 1e-6 && r1 > 1e-6) {
+            scale = std::max(r1 / r0, MIN_HELD_SHAPE_SCALE);
+            angle = std::remainder(std::atan2(py, px) - std::atan2(gy, gx), 2 * M_PI);
+            // Do not rotate when the pen only moves a little: resizing alone stays straight
+            angle = std::abs(angle) < HELD_SHAPE_ROTATION_DEADZONE ? 0.0 : snappingHandler.snapAngle(angle, false);
+        }
+        const double c = std::cos(angle) * scale;
+        const double s = std::sin(angle) * scale;
+        for (const Point& q: heldShapeBase) {
+            const double dx = q.x - heldShapeCenter.x;
+            const double dy = q.y - heldShapeCenter.y;
+            pts.emplace_back(heldShapeCenter.x + c * dx - s * dy, heldShapeCenter.y + s * dx + c * dy);
+        }
+    }
+    heldShape->setPointVector(std::move(pts));
+
+    repaint = repaint.unite(Range(heldShape->boundingRect()));
+    repaint.addPadding(heldShape->getWidth());
+    this->viewPool->dispatch(xoj::view::StrokeToolView::LIVE_SHAPE_REQUEST, *heldShape, repaint);
 }
 
 void StrokeHandler::paintTo(Point point) {
@@ -125,9 +232,15 @@ void StrokeHandler::drawSegmentTo(const Point& point) {
 }
 
 void StrokeHandler::onSequenceCancelEvent() {
+    holdTimer.cancel();
     if (this->stroke) {
-        this->viewPool->dispatchAndClear(xoj::view::StrokeToolView::CANCELLATION_REQUEST,
-                                         Range(this->stroke->boundingRect()));
+        Range rg(this->stroke->boundingRect());
+        if (heldShape) {
+            rg = rg.unite(Range(heldShape->boundingRect()));
+            rg.addPadding(heldShape->getWidth());
+            heldShape.reset();
+        }
+        this->viewPool->dispatchAndClear(xoj::view::StrokeToolView::CANCELLATION_REQUEST, rg);
         stroke.reset();
     }
 }
@@ -161,6 +274,7 @@ void StrokeHandler::finalizeStroke(double pressure) {
 }
 
 void StrokeHandler::onButtonReleaseEvent(const PositionInputData& pos, double zoom) {
+    holdTimer.cancel();
     if (!stroke) {
         return;
     }
@@ -184,6 +298,12 @@ void StrokeHandler::onButtonReleaseEvent(const PositionInputData& pos, double zo
                 control->insertNewPage(currentPage + 1, true);
             }
         }
+    }
+
+    if (heldShape) {
+        // The pen was held still and the stroke recognized: keep the shape where the pen left it
+        strokeRecognizerDetected(std::move(heldShape), layer);
+        return;
     }
 
     ToolHandler* h = control->getToolHandler();
@@ -274,6 +394,13 @@ void StrokeHandler::onButtonPressEvent(const PositionInputData& pos, double zoom
     stroke->addPoint(Point(this->buttonDownPoint.x, this->buttonDownPoint.y, width));
 
     stabilizer->initialize(this, zoom, pos);
+
+    heldShape.reset();
+    holdTimer.cancel();
+    if (holdRecognitionActive()) {
+        holdZoom = zoom;
+        watchForHold(this->buttonDownPoint);
+    }
 }
 
 void StrokeHandler::onButtonDoublePressEvent(const PositionInputData&, double) {

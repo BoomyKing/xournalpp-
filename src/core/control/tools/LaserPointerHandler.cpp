@@ -22,6 +22,9 @@ class TemporaryStrokeHandler: public StrokeHandler {
 public:
     using StrokeHandler::finalizeStroke;
     using StrokeHandler::StrokeHandler;
+
+protected:
+    bool allowsHoldRecognition() const override { return false; }
 };
 
 LaserPointerHandler::LaserPointerHandler(XojPageView* pageView, Control* control, const PageRef& page):

@@ -12,7 +12,7 @@ jobs:
     with:
       runner: windows-2022
       displayed_name: Windows x86_64
-      msystem: mingw64
-      msys_package_env: x86_64
+      msystem: ucrt64
+      msys_package_env: ucrt-x86_64
       publish_portable_version: true
       artifact_version_suffix: '-hold-to-recognize'

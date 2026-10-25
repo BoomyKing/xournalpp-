@@ -548,6 +548,17 @@ public:
     bool getSnapRecognizedShapesEnabled() const;
 
     /**
+     * Hold to recognize: holding the pen still while drawing turns the stroke into the recognized shape,
+     * which then follows the pen until it is lifted.
+     */
+    void setStrokeHoldRecognizerEnabled(bool enabled);
+    bool getStrokeHoldRecognizerEnabled() const;
+
+    /// How long (in ms) the pen must be held still before the stroke is recognized
+    void setStrokeHoldRecognizerDelay(unsigned int timeInMs);
+    unsigned int getStrokeHoldRecognizerDelay() const;
+
+    /**
      * Set line width restoring for resized edit selctions enabled
      */
     void setRestoreLineWidthEnabled(bool enabled);
@@ -1141,6 +1152,8 @@ private:
      * Whether snapping for recognized shapes is enabled
      */
     bool snapRecognizedShapesEnabled{};
+    bool strokeHoldRecognizerEnabled{};        ///< Hold the pen still to recognize the stroke as a shape
+    unsigned int strokeHoldRecognizerDelay{};  ///< in ms
 
     /**
      * Whether the line width should be preserved in a resizing operation

@@ -52,6 +52,14 @@ public:
     } STROKE_REPLACEMENT_REQUEST = {};
     virtual void on(StrokeReplacementRequest, const Stroke& newStroke);
 
+    /**
+     * @brief Replace the drawn stroke by newStroke and repaint rg, which must contain both the old and the new
+     * stroke. Used while a shape recognized by holding the pen still follows the pen.
+     */
+    static constexpr struct LiveShapeRequest {
+    } LIVE_SHAPE_REQUEST = {};
+    void on(LiveShapeRequest, const Stroke& newStroke, const Range& rg);
+
     static constexpr struct CancellationRequest {
     } CANCELLATION_REQUEST = {};
     void deleteOn(CancellationRequest, const Range& rg);

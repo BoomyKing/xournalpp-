@@ -12,11 +12,14 @@
 #pragma once
 
 #include <memory>  // for unique_ptr
+#include <vector>  // for vector
 
 #include <gdk/gdk.h>  // for GdkEventKey
 
-#include "model/PageRef.h"  // for PageRef
-#include "model/Point.h"    // for Point
+#include "model/PageRef.h"          // for PageRef
+#include "model/Point.h"            // for Point
+#include "util/Range.h"             // for Range
+#include "util/raii/GSourceURef.h"  // for GSourceURef
 
 #include "InputHandler.h"            // for InputHandler
 #include "SnapToGridInputHandler.h"  // for SnapToGridInputHandler
@@ -88,6 +91,9 @@ protected:
     /// Finalizes the stroke using the provided pressure as last point
     void finalizeStroke(double pressure);
 
+    /// Whether holding the pen still may turn the stroke into a shape (see Settings::getStrokeHoldRecognizerEnabled)
+    virtual bool allowsHoldRecognition() const { return true; }
+
 protected:
     Point buttonDownPoint;  // used for tapSelect and filtering - never snapped to grid.
     SnapToGridInputHandler snappingHandler;
@@ -105,4 +111,33 @@ private:
     friend class StrokeStabilizer::Active;
 
     static constexpr double MAX_WIDTH_VARIATION = 0.3;
+
+    /*
+     * Hold to recognize: when the pen stays still for a moment while drawing, the stroke is replaced by the
+     * recognized shape. Until the pen is lifted, the shape keeps following the pen: a line keeps its starting
+     * point and its other end follows the pen, other shapes are scaled and rotated around their centre.
+     */
+    bool holdRecognitionActive() const;
+    void watchForHold(const Point& penPos);
+    static void onHoldTimeout(StrokeHandler* self);
+    void recognizeHeldStroke();
+    void updateHeldShape(const Point& penPos);
+    void updateHeldShape(const Point& penPos, Range repaint);
+
+    /// Pen movements smaller than this (in screen pixels) still count as holding still
+    static constexpr double HOLD_TOLERANCE = 4.0;
+    /// Rotations smaller than this (in radians) are ignored, so that resizing a held shape does not tilt it
+    static constexpr double HELD_SHAPE_ROTATION_DEADZONE = 0.12;
+    static constexpr double MIN_HELD_SHAPE_SCALE = 0.05;
+
+    xoj::util::GSourceURef holdTimer;
+    Point holdWatchPoint;  ///< Where the pen was when the timer was last restarted
+    Point lastPenPoint;    ///< Latest pen position (not snapped)
+    double holdZoom = 1.0;
+
+    std::unique_ptr<Stroke> heldShape;  ///< The recognized shape following the pen, if any
+    std::vector<Point> heldShapeBase;   ///< Its points at the moment it was recognized
+    Point heldShapeGrab;                ///< The pen position at that moment
+    Point heldShapeCenter;              ///< Centre for scaling and rotating closed shapes
+    bool heldShapeIsLine = false;
 };

@@ -116,6 +116,12 @@ void StrokeToolView::on(StrokeToolView::StrokeReplacementRequest, const Stroke& 
                (newStroke.getToolType() == StrokeTool::HIGHLIGHTER ? CAIRO_OPERATOR_MULTIPLY : CAIRO_OPERATOR_OVER));
 }
 
+void StrokeToolView::on(StrokeToolView::LiveShapeRequest, const Stroke& newStroke, const Range& rg) {
+    this->on(STROKE_REPLACEMENT_REQUEST, newStroke);  // virtual: filled views update their filling too
+    this->singleDot = false;
+    this->parent->flagDirtyRegion(rg);
+}
+
 void StrokeToolView::deleteOn(StrokeToolView::FinalizationRequest, const Range& rg) {
     this->parent->drawAndDeleteToolView(this, rg);
 }

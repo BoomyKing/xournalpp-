@@ -15,7 +15,8 @@
 #include "model/Stroke.h"                                   // for Stroke
 #include "util/safe_casts.h"                                // for as_unsigned
 
-#include "CircleRecognizer.h"  // for CircleRec...
+#include "CircleRecognizer.h"         // for CircleRec...
+#include "ClosedPolygonRecognizer.h"  // for ClosedPolygonRecognizer
 #include "Inertia.h"           // for Inertia
 #include "config-debug.h"      // for DEBUG_REC...
 
@@ -335,6 +336,20 @@ auto ShapeRecognizer::isStrokeLargeEnough(Stroke* stroke, double strokeMinSize) 
  * The main pattern recognition function
  */
 auto ShapeRecognizer::recognizePatterns(Stroke* stroke, double strokeMinSize) -> std::unique_ptr<Stroke> {
+    auto result = recognizeSingleStroke(stroke, strokeMinSize);
+    // Lines and polygons found by the strict recognizer are kept. Circles and failures get a second chance: a closed
+    // stroke that started mid-side, started with a hook, overshot or has a kink may still be a triangle or rectangle.
+    const bool lineOrPolygon = result && result->getPointCount() <= MAX_POLYGON_SIDES + 1;
+    if (!lineOrPolygon && isStrokeLargeEnough(stroke, strokeMinSize)) {
+        if (auto polygon = ClosedPolygonRecognizer::recognize(stroke)) {
+            RDEBUG("return closed polygon");
+            return polygon;
+        }
+    }
+    return result;
+}
+
+auto ShapeRecognizer::recognizeSingleStroke(Stroke* stroke, double strokeMinSize) -> std::unique_ptr<Stroke> {
     this->stroke = stroke;
 
     if (!isStrokeLargeEnough(stroke, strokeMinSize)) {

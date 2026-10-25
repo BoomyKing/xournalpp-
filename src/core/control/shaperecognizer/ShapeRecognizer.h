@@ -31,6 +31,9 @@ public:
     void resetRecognizer();
 
 private:
+    /// The strict recognizer: up to MAX_POLYGON_SIDES straight segments starting at the stroke's start, or a circle
+    auto recognizeSingleStroke(Stroke* stroke, double strokeMinSize) -> std::unique_ptr<Stroke>;
+
     auto tryTriangle() -> std::unique_ptr<Stroke>;
     auto tryRectangle() -> std::unique_ptr<Stroke>;
 

@@ -1,3 +1,46 @@
+> [!NOTE]
+> **This is a personal fork of [Xournal++](https://github.com/xournalpp/xournalpp), not an official build.**
+> It adds a Notability-style **hold to recognize shapes** feature. Everything else is the original project,
+> whose README follows below.
+
+## What this fork adds: hold to recognize shapes
+
+While drawing with the pen or highlighter, **hold the pen still for a moment** and the stroke turns into the
+shape it looks like: a straight line, triangle, rectangle or circle. **Keep the pen down to adjust it:**
+
+- **Line:** the start stays where you began, the other end follows the pen (with the usual angle and grid snapping).
+- **Other shapes:** move the pen to resize and rotate them around their centre.
+- **Lift the pen** to finish. **Ctrl+Z** brings back your hand-drawn stroke.
+
+If nothing is recognized, the stroke stays as you drew it, so pausing while writing is not affected.
+
+Turn it on in **Edit → Preferences → Drawing Area → Shape Recognizer → "Hold the pen still to turn a stroke into a
+shape"**, where you can also set the hold time (600 ms by default). It is off by default.
+
+### Branches
+
+| Branch | What it is |
+| --- | --- |
+| [`hold-to-recognize-1.3.8`](../../tree/hold-to-recognize-1.3.8) | The feature on top of the stable Xournal++ 1.3.8 release. Used for the Windows builds below. |
+| [`hold-to-recognize`](../../tree/hold-to-recognize) | The same feature on top of the latest Xournal++ development code, as a possible contribution to the original project. |
+| `master` | The original project plus this page and the build workflow. |
+
+### Windows build
+
+Go to [Actions → Build Windows installer](../../actions/workflows/build-windows-personal.yml), click **Run workflow**,
+choose the branch `hold-to-recognize-1.3.8` and start it. When it finishes (about 20–30 minutes), the installer and a
+portable version can be downloaded under **Artifacts** at the bottom of the run. The portable version runs
+without touching an installed Xournal++: unzip it and start `bin\xournalpp.exe`.
+
+The builds are not signed, so Windows may warn about an unknown publisher (**More info → Run anyway**).
+
+### Credits and licence
+
+The feature was written with the help of an AI assistant (Claude) and tested on Linux. Xournal++ and this fork are
+licensed under the [GNU GPL v2 or later](LICENSE).
+
+---
+
 # <img src="ui/pixmaps/com.github.xournalpp.xournalpp.svg" align="left" width="100" height="100">  <br> Xournal++
 
 

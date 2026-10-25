@@ -1,6 +1,7 @@
 > [!NOTE]
 > **This is a personal fork of [Xournal++](https://github.com/xournalpp/xournalpp), not an official build.**
-> It adds a Notability-style **hold to recognize shapes** feature. Everything else is the original project,
+> It adds a Notability-style **hold to recognize shapes** feature and a more forgiving shape recognizer.
+> Everything else is the original project,
 > whose README follows below.
 
 ## What this fork adds: hold to recognize shapes
@@ -17,12 +18,19 @@ If nothing is recognized, the stroke stays as you drew it, so pausing while writ
 Turn it on in **Edit → Preferences → Drawing Area → Shape Recognizer → "Hold the pen still to turn a stroke into a
 shape"**, where you can also set the hold time (600 ms by default). It is off by default.
 
+## Also: a more forgiving shape recognizer
+
+Hand-drawn squares, rectangles and triangles are recognized much more reliably, also when you start in the middle of
+a side, start with a small hook, overshoot where you started or one side has a kink. Circles, lines and handwriting
+are recognized exactly as before. This helps both the shape recognizer drawing tool and hold to recognize.
+
 ### Branches
 
 | Branch | What it is |
 | --- | --- |
-| [`hold-to-recognize-1.3.8`](../../tree/hold-to-recognize-1.3.8) | The feature on top of the stable Xournal++ 1.3.8 release. Used for the Windows builds below. |
-| [`hold-to-recognize`](../../tree/hold-to-recognize) | The same feature on top of the latest Xournal++ development code, as a possible contribution to the original project. |
+| [`hold-to-recognize-1.3.8`](../../tree/hold-to-recognize-1.3.8) | Both changes on top of the stable Xournal++ 1.3.8 release. Used for the Windows builds below. |
+| [`hold-to-recognize`](../../tree/hold-to-recognize) | Both changes on top of the latest Xournal++ development code. |
+| [`better-shape-recognizer`](../../tree/better-shape-recognizer) | Only the recognizer improvement, on the latest development code, as a separate possible contribution. |
 | `master` | The original project plus this page and the build workflow. |
 
 ### Windows build
@@ -36,7 +44,7 @@ The builds are not signed, so Windows may warn about an unknown publisher (**Mor
 
 ### Credits and licence
 
-The feature was written with the help of an AI assistant (Claude) and tested on Linux. Xournal++ and this fork are
+The changes were written with the help of an AI assistant (Claude) and tested on Linux. Xournal++ and this fork are
 licensed under the [GNU GPL v2 or later](LICENSE).
 
 ---

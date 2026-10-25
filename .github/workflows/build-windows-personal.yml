@@ -1,0 +1,18 @@
+# Builds a Windows installer (and portable zip) of this branch.
+# Run it from the "Actions" tab of the fork: "Build Windows installer" > "Run workflow".
+# The result appears as downloadable files at the bottom of the finished run.
+name: Build Windows installer
+
+on:
+  workflow_dispatch:
+
+jobs:
+  windows:
+    uses: ./.github/workflows/make-installer-windows.yml
+    with:
+      runner: windows-2022
+      displayed_name: Windows x86_64
+      msystem: mingw64
+      msys_package_env: x86_64
+      publish_portable_version: true
+      artifact_version_suffix: '-hold-to-recognize'

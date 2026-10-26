@@ -144,8 +144,23 @@ void StrokeHandler::updateHeldShape(const Point& penPos, Range repaint) {
     pts.reserve(heldShapeBase.size());
     if (heldShapeIsLine) {
         const Point& start = heldShapeBase.front();
-        // Same snapping as the line tool: rotation snapping and/or grid snapping, depending on the settings
-        const Point end = snappingHandler.snap(penPos, start, false);
+        Point end;
+        const double angle = std::atan2(penPos.y - start.y, penPos.x - start.x);
+        if (const double deviation = std::remainder(angle, M_PI / 2); std::abs(deviation) < SLANT_TOLERANCE) {
+            // Nearly horizontal or vertical: make it exactly so (and snap the end to the grid, if enabled)
+            const double length = std::hypot(penPos.x - start.x, penPos.y - start.y);
+            end = snappingHandler.snapToGrid(Point(start.x + length * std::cos(angle - deviation),
+                                                   start.y + length * std::sin(angle - deviation)),
+                                             false);
+            if (std::abs(std::remainder(angle - deviation, M_PI)) < 1e-9) {
+                end.y = start.y;  // grid snapping must not tilt it again
+            } else {
+                end.x = start.x;
+            }
+        } else {
+            // Same snapping as the line tool: rotation snapping and/or grid snapping, depending on the settings
+            end = snappingHandler.snap(penPos, start, false);
+        }
         pts.emplace_back(start.x, start.y);
         pts.emplace_back(end.x, end.y);
     } else {

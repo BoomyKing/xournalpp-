@@ -337,14 +337,28 @@ auto ShapeRecognizer::isStrokeLargeEnough(Stroke* stroke, double strokeMinSize) 
  */
 auto ShapeRecognizer::recognizePatterns(Stroke* stroke, double strokeMinSize) -> std::unique_ptr<Stroke> {
     auto result = recognizeSingleStroke(stroke, strokeMinSize);
-    // Lines and polygons found by the strict recognizer are kept. Circles and failures get a second chance: a closed
-    // stroke that started mid-side, started with a hook, overshot or has a kink may still be a triangle or rectangle.
-    const bool lineOrPolygon = result && result->getPointCount() <= MAX_POLYGON_SIDES + 1;
-    if (!lineOrPolygon && isStrokeLargeEnough(stroke, strokeMinSize)) {
-        if (auto polygon = ClosedPolygonRecognizer::recognize(stroke)) {
+    const size_t n = result ? result->getPointCount() : 0;
+    if (n == 2) {
+        return result;  // a line
+    }
+    // The strict recognizer may build a polygon whose corners lie far from the stroke (e.g. a long thin triangle
+    // from a rectangle, where two nearly parallel sides meet far away). Such results are discarded.
+    const bool polygon = n >= 4 && n <= MAX_POLYGON_SIDES + 1;
+    if (polygon && ClosedPolygonRecognizer::fitsStroke(stroke, result.get())) {
+        ClosedPolygonRecognizer::straighten(result.get());
+        return result;
+    }
+    // Circles and failures get a second chance: a closed stroke that started mid-side, started with a hook,
+    // overshot or has a kink may still be a triangle or rectangle.
+    if (isStrokeLargeEnough(stroke, strokeMinSize)) {
+        if (auto closed = ClosedPolygonRecognizer::recognize(stroke)) {
             RDEBUG("return closed polygon");
-            return polygon;
+            return closed;
         }
+    }
+    if (polygon) {
+        RDEBUG("discard polygon that does not fit the stroke");
+        return nullptr;
     }
     return result;
 }

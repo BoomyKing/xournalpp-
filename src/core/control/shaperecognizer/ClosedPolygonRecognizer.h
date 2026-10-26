@@ -31,4 +31,10 @@ public:
 
     /// Returns the recognized triangle or quadrilateral (closed: last point == first point), or nullptr.
     static auto recognize(const Stroke* stroke) -> std::unique_ptr<Stroke>;
+
+    /// Makes a recognized near-rectangle a proper rectangle and levels polygons that are nearly level
+    static void straighten(Stroke* polygon);
+
+    /// Whether the polygon follows the stroke closely and none of its corners is far away from it
+    static auto fitsStroke(const Stroke* stroke, const Stroke* polygon) -> bool;
 };

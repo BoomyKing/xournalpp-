@@ -9,7 +9,7 @@
 #include "model/Point.h"   // for Point
 #include "model/Stroke.h"  // for Stroke
 
-#include "ShapeRecognizerConfig.h"  // for RDEBUG
+#include "ShapeRecognizerConfig.h"  // for RDEBUG, SLANT_TOLERANCE
 
 namespace {
 // All lengths are relative to the diagonal of the stroke's bounding box.
@@ -19,10 +19,12 @@ constexpr double MIN_EDGE_LENGTH = 0.12;         ///< shorter edges are merged i
 constexpr double MEAN_FIT_TOLERANCE = 0.045;     ///< mean distance from the stroke to the polygon
 constexpr double MAX_FIT_TOLERANCE = 0.14;       ///< max distance from the stroke to the polygon
 constexpr double MIN_AREA = 0.03;                ///< relative to diagonal^2: rejects thin back-and-forth strokes
-constexpr double MAX_BULGE = 0.04;               ///< max average outward bulge of the sides, relative to their length
+constexpr double MAX_BULGE = 0.10;               ///< max average outward bulge of the sides, relative to their length
+constexpr double MIN_CORNER_SHARPNESS = 0.7;     ///< see cornerSharpness(): ellipses score below, polygons above
 constexpr double MERGE_ANGLE = 30 * M_PI / 180;  ///< corners flatter than this are removed
 constexpr double RIGHT_ANGLE_TOLERANCE = 20 * M_PI / 180;  ///< quadrilaterals this close to a rectangle become one
-constexpr double AXIS_TOLERANCE = 8 * M_PI / 180;          ///< rectangles this close to the axes are straightened
+constexpr double CORNER_MARGIN = 0.15;                     ///< corners of a recognized polygon may lie this far outside
+constexpr double STRICT_MEAN_FIT_TOLERANCE = 0.06;         ///< mean distance from the stroke to a recognized polygon
 constexpr size_t MAX_POINTS = 1500;                        ///< longer strokes are subsampled
 
 struct P {
@@ -74,7 +76,182 @@ auto polygonArea(const std::vector<P>& v) -> double {
     }
     return std::fabs(area) / 2;
 }
+
+/**
+ * How sharp the polygon's corners are in the stroke: the direction change of the stroke close to each corner,
+ * relative to the polygon's own corner angles. About 1 for a hand-drawn polygon (the stroke turns at the corners),
+ * clearly less for an ellipse traced with a polygon (the stroke turns gradually everywhere).
+ */
+auto cornerSharpness(const std::vector<P>& loop, const std::vector<P>& v) -> double {
+    constexpr long N = 240;      // resampled points along the stroke
+    constexpr long HEADING = 5;  // direction is measured over +-2% of the perimeter, smoothing out jitter
+    constexpr long CORNER = 12;  // turning counted within +-5% of the perimeter around each corner
+    double perimeter = 0;
+    for (size_t i = 0; i + 1 < loop.size(); i++) {
+        perimeter += dist(loop[i], loop[i + 1]);
+    }
+    if (perimeter <= 0 || loop.size() < 2) {
+        return 0;
+    }
+    std::vector<P> rs;  // the stroke resampled at equal distances
+    double done = 0;
+    size_t j = 0;
+    for (long k = 0; k < N; k++) {
+        const double target = perimeter * static_cast<double>(k) / N;
+        while (j + 2 < loop.size() && done + dist(loop[j], loop[j + 1]) < target) {
+            done += dist(loop[j], loop[j + 1]);
+            j++;
+        }
+        const double seg = dist(loop[j], loop[j + 1]);
+        const double t = seg > 0 ? std::clamp((target - done) / seg, 0.0, 1.0) : 0.0;
+        rs.push_back({loop[j].x + t * (loop[j + 1].x - loop[j].x), loop[j].y + t * (loop[j + 1].y - loop[j].y)});
+    }
+    auto at = [&rs](long i) -> const P& { return rs[static_cast<size_t>(((i % N) + N) % N)]; };
+    auto heading = [&at](long i) {
+        const P& a = at(i - HEADING);
+        const P& b = at(i + HEADING);
+        return std::atan2(b.y - a.y, b.x - a.x);
+    };
+    double strokeTurn = 0, polygonTurn = 0;
+    for (size_t i = 0; i < v.size(); i++) {
+        long nearest = 0;
+        double nearestDist = std::numeric_limits<double>::max();
+        for (long k = 0; k < N; k++) {
+            if (const double d = dist(rs[static_cast<size_t>(k)], v[i]); d < nearestDist) {
+                nearestDist = d, nearest = k;
+            }
+        }
+        strokeTurn += std::fabs(std::remainder(heading(nearest + CORNER) - heading(nearest - CORNER), 2 * M_PI));
+        polygonTurn += turnAngle(v[(i + v.size() - 1) % v.size()], v[i], v[(i + 1) % v.size()]);
+    }
+    return polygonTurn > 0 ? strokeTurn / polygonTurn : 0;
+}
+
+/// Makes near-rectangles proper rectangles, and rotates shapes that are nearly level (within SLANT_TOLERANCE of
+/// horizontal/vertical) so that they are exactly level.
+void regularize(std::vector<P>& v) {
+    P c{0, 0};
+    for (const P& p: v) {
+        c.x += p.x, c.y += p.y;
+    }
+    c.x /= static_cast<double>(v.size()), c.y /= static_cast<double>(v.size());
+
+    bool rectangular = v.size() == 4;
+    for (size_t i = 0; rectangular && i < 4; i++) {
+        const double turn = turnAngle(v[(i + 3) % 4], v[i], v[(i + 1) % 4]);
+        rectangular = std::fabs(turn - M_PI / 2) <= RIGHT_ANGLE_TOLERANCE;
+    }
+    if (rectangular) {
+        // average edge direction modulo 90 degrees (circular mean of 4 * angle)
+        double sx = 0, sy = 0;
+        for (size_t i = 0; i < 4; i++) {
+            const P& a = v[i];
+            const P& b = v[(i + 1) % 4];
+            const double angle = std::atan2(b.y - a.y, b.x - a.x);
+            const double len = dist(a, b);
+            sx += len * std::cos(4 * angle), sy += len * std::sin(4 * angle);
+        }
+        double theta = std::atan2(sy, sx) / 4;  // in [-45, 45] degrees
+        if (std::fabs(theta) < SLANT_TOLERANCE) {
+            theta = 0;
+        }
+        const double ct = std::cos(theta), st = std::sin(theta);
+        // In the rectangle's own coordinates each side lies between two corners: put it at their average
+        std::vector<double> us, ws;
+        for (const P& p: v) {
+            us.push_back((p.x - c.x) * ct + (p.y - c.y) * st);
+            ws.push_back(-(p.x - c.x) * st + (p.y - c.y) * ct);
+        }
+        std::sort(us.begin(), us.end());
+        std::sort(ws.begin(), ws.end());
+        const double lo1 = (us[0] + us[1]) / 2, hi1 = (us[2] + us[3]) / 2;
+        const double lo2 = (ws[0] + ws[1]) / 2, hi2 = (ws[2] + ws[3]) / 2;
+        auto back = [&](double u, double w) -> P { return {c.x + u * ct - w * st, c.y + u * st + w * ct}; };
+        v = {back(lo1, lo2), back(hi1, lo2), back(hi1, hi2), back(lo1, hi2)};
+        return;
+    }
+
+    // Other shapes: make the side closest to horizontal/vertical exactly level, if it is nearly so
+    double best = M_PI;
+    for (size_t i = 0; i < v.size(); i++) {
+        const P& a = v[i];
+        const P& b = v[(i + 1) % v.size()];
+        const double deviation = std::remainder(std::atan2(b.y - a.y, b.x - a.x), M_PI / 2);
+        if (std::fabs(deviation) < std::fabs(best)) {
+            best = deviation;
+        }
+    }
+    if (std::fabs(best) < SLANT_TOLERANCE && best != 0) {
+        const double ct = std::cos(-best), st = std::sin(-best);
+        for (P& p: v) {
+            const double dx = p.x - c.x, dy = p.y - c.y;
+            p = {c.x + dx * ct - dy * st, c.y + dx * st + dy * ct};
+        }
+    }
+}
 }  // namespace
+
+void ClosedPolygonRecognizer::straighten(Stroke* polygon) {
+    const auto& pts = polygon->getPointVector();
+    if (pts.size() < 4 || pts.front().x != pts.back().x || pts.front().y != pts.back().y) {
+        return;  // only closed polygons
+    }
+    std::vector<P> v;
+    for (size_t i = 0; i + 1 < pts.size(); i++) {
+        v.push_back({pts[i].x, pts[i].y});
+    }
+    regularize(v);
+    std::vector<Point> out;
+    for (const P& p: v) {
+        out.emplace_back(p.x, p.y);
+    }
+    out.emplace_back(v[0].x, v[0].y);
+    polygon->setPointVector(std::move(out));
+}
+
+auto ClosedPolygonRecognizer::fitsStroke(const Stroke* stroke, const Stroke* polygon) -> bool {
+    const auto& sp = stroke->getPointVector();
+    const auto& pp = polygon->getPointVector();
+    if (sp.empty() || pp.size() < 2) {
+        return false;
+    }
+    double minX = sp[0].x, maxX = sp[0].x, minY = sp[0].y, maxY = sp[0].y;
+    for (const auto& p: sp) {
+        minX = std::min(minX, p.x), maxX = std::max(maxX, p.x);
+        minY = std::min(minY, p.y), maxY = std::max(maxY, p.y);
+    }
+    const double diag = std::hypot(maxX - minX, maxY - minY);
+    if (diag <= 0) {
+        return false;
+    }
+    // no corner far outside the stroke's bounding box
+    const double margin = CORNER_MARGIN * diag;
+    for (const auto& p: pp) {
+        if (p.x < minX - margin || p.x > maxX + margin || p.y < minY - margin || p.y > maxY + margin) {
+            RDEBUG("polygon corner (%.0f, %.0f) far from the stroke", p.x, p.y);
+            return false;
+        }
+    }
+    // the stroke follows the polygon's outline
+    const size_t step = std::max<size_t>(1, sp.size() / MAX_POINTS);
+    double sum = 0;
+    size_t count = 0;
+    for (size_t k = 0; k < sp.size(); k += step) {
+        const P q{sp[k].x, sp[k].y};
+        double d = std::numeric_limits<double>::max();
+        for (size_t i = 0; i + 1 < pp.size(); i++) {
+            d = std::min(d, distToSegment(q, {pp[i].x, pp[i].y}, {pp[i + 1].x, pp[i + 1].y}));
+        }
+        sum += d;
+        count++;
+    }
+    const double mean = sum / static_cast<double>(count) / diag;
+    if (mean > STRICT_MEAN_FIT_TOLERANCE) {
+        RDEBUG("polygon does not follow the stroke (mean %.3f)", mean);
+        return false;
+    }
+    return true;
+}
 
 auto ClosedPolygonRecognizer::recognize(const Stroke* stroke) -> std::unique_ptr<Stroke> {
     const auto& src = stroke->getPointVector();
@@ -205,8 +382,8 @@ auto ClosedPolygonRecognizer::recognize(const Stroke* stroke) -> std::unique_ptr
         return nullptr;
     }
 
-    // 5. ...with straight sides. A hand-drawn straight side wobbles to both sides, while a circle or ellipse traced
-    // with corners bulges outwards along every side. Measure the average outward bulge of each side.
+    // 5. ...with straight sides and real corners. A hand-drawn straight side wobbles to both sides, while a circle or
+    // ellipse traced with a polygon bulges outwards along every side and has no sharp corners.
     {
         P pc{0, 0};
         for (const P& p: v) {
@@ -244,50 +421,16 @@ auto ClosedPolygonRecognizer::recognize(const Stroke* stroke) -> std::unique_ptr
                 total += bulge[i] / static_cast<double>(count[i]) / len;
             }
         }
-        if (const double average = total / static_cast<double>(v.size()); average > MAX_BULGE) {
-            RDEBUG("closed polygon: round sides (bulge %.3f)", average);
+        const double average = total / static_cast<double>(v.size());
+        const double sharpness = cornerSharpness(loop, v);
+        if (average > MAX_BULGE || sharpness < MIN_CORNER_SHARPNESS) {
+            RDEBUG("closed polygon: round sides (bulge %.3f, corner sharpness %.2f)", average, sharpness);
             return nullptr;
         }
     }
 
-    // 6. Quadrilaterals with nearly right angles become proper rectangles
-    if (v.size() == 4) {
-        bool rectangular = true;
-        for (size_t i = 0; i < 4; i++) {
-            const double turn = turnAngle(v[(i + 3) % 4], v[i], v[(i + 1) % 4]);
-            if (std::fabs(turn - M_PI / 2) > RIGHT_ANGLE_TOLERANCE) {
-                rectangular = false;
-            }
-        }
-        if (rectangular) {
-            // average edge direction modulo 90 degrees (circular mean of 4 * angle)
-            double sx = 0, sy = 0;
-            for (size_t i = 0; i < 4; i++) {
-                const P& a = v[i];
-                const P& b = v[(i + 1) % 4];
-                const double angle = std::atan2(b.y - a.y, b.x - a.x);
-                const double len = dist(a, b);
-                sx += len * std::cos(4 * angle), sy += len * std::sin(4 * angle);
-            }
-            double theta = std::atan2(sy, sx) / 4;
-            if (std::fabs(std::fabs(theta) - M_PI / 4) > M_PI / 4 - AXIS_TOLERANCE) {
-                theta = 0;  // within AXIS_TOLERANCE of horizontal/vertical (theta is in [-45, 45] degrees)
-            }
-            const double ct = std::cos(theta), st = std::sin(theta);
-            // In the rectangle's own coordinates each side lies between two corners: put it at their average
-            std::vector<double> us, ws;
-            for (const P& p: v) {
-                us.push_back((p.x - c.x) * ct + (p.y - c.y) * st);
-                ws.push_back(-(p.x - c.x) * st + (p.y - c.y) * ct);
-            }
-            std::sort(us.begin(), us.end());
-            std::sort(ws.begin(), ws.end());
-            const double lo1 = (us[0] + us[1]) / 2, hi1 = (us[2] + us[3]) / 2;
-            const double lo2 = (ws[0] + ws[1]) / 2, hi2 = (ws[2] + ws[3]) / 2;
-            auto back = [&](double u, double w) -> P { return {c.x + u * ct - w * st, c.y + u * st + w * ct}; };
-            v = {back(lo1, lo2), back(hi1, lo2), back(hi1, hi2), back(lo1, hi2)};
-        }
-    }
+    // 6. Tidy up: proper rectangles, straightened when nearly level
+    regularize(v);
 
     auto s = std::make_unique<Stroke>();
     s->applyStyleFrom(stroke);

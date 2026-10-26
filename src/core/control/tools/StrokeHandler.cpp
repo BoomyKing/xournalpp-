@@ -350,7 +350,22 @@ void StrokeHandler::onButtonReleaseEvent(const PositionInputData& pos, double zo
 }
 
 void StrokeHandler::strokeRecognizerDetected(std::unique_ptr<Stroke> recognized, Layer* layer) {
-    recognized->setWidth(stroke->hasPressure() ? stroke->getAvgPressure() : stroke->getWidth());
+    // The recognized shape gets the hand-drawn stroke's average thickness
+    double width = stroke->getWidth();
+    if (stroke->hasPressure()) {
+        double sum = 0;
+        size_t count = 0;
+        for (const Point& p: stroke->getPointVector()) {
+            if (p.z > 0 && std::isfinite(p.z)) {
+                sum += p.z;
+                count++;
+            }
+        }
+        if (count > 0) {
+            width = sum / static_cast<double>(count);
+        }
+    }
+    recognized->setWidth(width);
 
     // snapping
     if (control->getSettings()->getSnapRecognizedShapesEnabled()) {
@@ -363,13 +378,18 @@ void StrokeHandler::strokeRecognizerDetected(std::unique_ptr<Stroke> recognized,
         Point belowRight = Point(snappedBounds.x + snappedBounds.width, snappedBounds.y + snappedBounds.height);
         Point belowRightSnapped = snappingHandler.snapToGrid(belowRight, false);
 
-        double fx = (std::abs(snappedBounds.width) > std::numeric_limits<double>::epsilon()) ?
-                            (belowRightSnapped.x - topLeftSnapped.x) / snappedBounds.width :
-                            1;
-        double fy = (std::abs(snappedBounds.height) > std::numeric_limits<double>::epsilon()) ?
-                            (belowRightSnapped.y - topLeftSnapped.y) / snappedBounds.height :
-                            1;
-        recognized->scale(topLeftSnapped.x, topLeftSnapped.y, fx, fy, 0, false);
+        // A (nearly) horizontal or vertical line has a (nearly) zero height or width. Stretching that dimension
+        // would multiply it by 0 or by a huge factor, making the shape invisible or sending it far off the page.
+        auto factor = [](double snappedSize, double size) {
+            constexpr double MIN_SIZE = 1.0;  // pt
+            const double f = snappedSize / size;
+            return (std::abs(size) >= MIN_SIZE && std::abs(snappedSize) >= MIN_SIZE && std::isfinite(f) && f > 0) ? f :
+                                                                                                                    1.0;
+        };
+        const double fx = factor(belowRightSnapped.x - topLeftSnapped.x, snappedBounds.width);
+        const double fy = factor(belowRightSnapped.y - topLeftSnapped.y, snappedBounds.height);
+        // Snapping to the grid moves and stretches the shape slightly; it should not change its thickness
+        recognized->scale(topLeftSnapped.x, topLeftSnapped.y, fx, fy, 0, true);
     }
 
     UndoRedoHandler* undo = control->getUndoRedoHandler();

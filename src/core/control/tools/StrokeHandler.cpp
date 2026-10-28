@@ -40,6 +40,30 @@
 
 using xoj::util::Rectangle;
 
+namespace {
+/// The thickness a shape recognized from the stroke gets: the stroke's average thickness. Points without a valid
+/// pressure value are ignored, so they cannot make the shape invisible.
+auto recognizedShapeWidth(const Stroke& stroke) -> double {
+    if (!stroke.hasPressure()) {
+        return stroke.getWidth();
+    }
+    double sum = 0;
+    size_t count = 0;
+    for (const Point& p: stroke.getPointVector()) {
+        if (p.z > 0 && std::isfinite(p.z)) {
+            sum += p.z;
+            count++;
+        }
+    }
+    return count > 0 ? sum / static_cast<double>(count) : stroke.getWidth();
+}
+
+auto hasFinitePoints(const Stroke& s) -> bool {
+    const auto& pts = s.getPointVector();
+    return std::all_of(pts.begin(), pts.end(), [](const Point& p) { return std::isfinite(p.x) && std::isfinite(p.y); });
+}
+}  // namespace
+
 StrokeHandler::StrokeHandler(Control* control, const PageRef& page):
         InputHandler(control, page),
         snappingHandler(control->getSettings()),
@@ -113,10 +137,10 @@ void StrokeHandler::recognizeHeldStroke() {
     }
     ShapeRecognizer reco;
     auto recognized = reco.recognizePatterns(stroke.get(), control->getSettings()->getStrokeRecognizerMinSize());
-    if (!recognized || recognized->getPointCount() < 2) {
+    if (!recognized || recognized->getPointCount() < 2 || !hasFinitePoints(*recognized)) {
         return;  // Not a shape: keep drawing freehand
     }
-    recognized->setWidth(stroke->hasPressure() ? stroke->getAvgPressure() : stroke->getWidth());
+    recognized->setWidth(recognizedShapeWidth(*stroke));
 
     heldShapeGrab = lastPenPoint;
     heldShapeIsLine = recognized->getPointCount() == 2;
@@ -128,11 +152,37 @@ void StrokeHandler::recognizeHeldStroke() {
         heldShapeBase = recognized->getPointVector();
         const auto box = recognized->boundingRect();
         heldShapeCenter = Point(box.x + box.width / 2, box.y + box.height / 2);
+        // Polygons are kept level while they are rotated by less than SLANT_TOLERANCE away from level; this is
+        // measured on their longest side. (Rotating a circle changes nothing, it needs no such care.)
+        heldShapeTilt.reset();
+        if (heldShapeBase.size() <= MAX_POLYGON_SIDES + 1) {
+            double longest = -1;
+            for (size_t i = 0; i + 1 < heldShapeBase.size(); i++) {
+                const Point& a = heldShapeBase[i];
+                const Point& b = heldShapeBase[i + 1];
+                if (const double len = a.lineLengthTo(b); len > longest) {
+                    longest = len;
+                    heldShapeTilt = std::remainder(std::atan2(b.y - a.y, b.x - a.x), M_PI / 2);
+                }
+            }
+        }
     }
 
     const Range oldRange(stroke->boundingRect());
     heldShape = std::move(recognized);
     updateHeldShape(lastPenPoint, oldRange);
+}
+
+auto StrokeHandler::isUsableHeldShape() const -> bool {
+    if (!heldShape || !hasFinitePoints(*heldShape)) {
+        return false;
+    }
+    if (heldShapeIsLine) {
+        // A held line whose end was moved back onto its start would become a dot
+        const auto& pts = heldShape->getPointVector();
+        return pts.size() == 2 && pts.front().lineLengthTo(pts.back()) * holdZoom >= MIN_HELD_LINE_LENGTH;
+    }
+    return true;
 }
 
 void StrokeHandler::updateHeldShape(const Point& penPos) { updateHeldShape(penPos, Range(heldShape->boundingRect())); }
@@ -171,11 +221,20 @@ void StrokeHandler::updateHeldShape(const Point& penPos, Range repaint) {
         const double r1 = std::hypot(px, py);
         double scale = 1.0;
         double angle = 0.0;
-        if (r0 > 1e-6 && r1 > 1e-6) {
+        // The pen wobbles a little when it is lifted: that must neither resize nor tilt the shape
+        const bool penMoved = penPos.lineLengthTo(heldShapeGrab) * holdZoom > HOLD_TOLERANCE;
+        if (penMoved && r0 > 1e-6 && r1 > 1e-6) {
             scale = std::max(r1 / r0, MIN_HELD_SHAPE_SCALE);
             angle = std::remainder(std::atan2(py, px) - std::atan2(gy, gx), 2 * M_PI);
             // Do not rotate when the pen only moves a little: resizing alone stays straight
             angle = std::abs(angle) < HELD_SHAPE_ROTATION_DEADZONE ? 0.0 : snappingHandler.snapAngle(angle, false);
+            if (heldShapeTilt) {
+                // A polygon rotated to (nearly) level becomes exactly level
+                if (const double deviation = std::remainder(*heldShapeTilt + angle, M_PI / 2);
+                    std::abs(deviation) < SLANT_TOLERANCE) {
+                    angle -= deviation;
+                }
+            }
         }
         const double c = std::cos(angle) * scale;
         const double s = std::sin(angle) * scale;
@@ -316,9 +375,16 @@ void StrokeHandler::onButtonReleaseEvent(const PositionInputData& pos, double zo
     }
 
     if (heldShape) {
-        // The pen was held still and the stroke recognized: keep the shape where the pen left it
-        strokeRecognizerDetected(std::move(heldShape), layer);
-        return;
+        if (isUsableHeldShape()) {
+            // The pen was held still and the stroke recognized: keep the shape where the pen left it
+            strokeRecognizerDetected(std::move(heldShape), layer);
+            return;
+        }
+        // E.g. the end of a held line was moved back onto its start: keep the hand-drawn stroke instead of a dot
+        Range rg = Range(heldShape->boundingRect()).unite(Range(stroke->boundingRect()));
+        rg.addPadding(std::max(heldShape->getWidth(), stroke->getWidth()));
+        heldShape.reset();
+        this->viewPool->dispatch(xoj::view::StrokeToolView::LIVE_SHAPE_REQUEST, *stroke, rg);
     }
 
     ToolHandler* h = control->getToolHandler();
@@ -349,21 +415,7 @@ void StrokeHandler::onButtonReleaseEvent(const PositionInputData& pos, double zo
 
 void StrokeHandler::strokeRecognizerDetected(std::unique_ptr<Stroke> recognized, Layer* layer) {
     // The recognized shape gets the hand-drawn stroke's average thickness
-    double width = stroke->getWidth();
-    if (stroke->hasPressure()) {
-        double sum = 0;
-        size_t count = 0;
-        for (const Point& p: stroke->getPointVector()) {
-            if (p.z > 0 && std::isfinite(p.z)) {
-                sum += p.z;
-                count++;
-            }
-        }
-        if (count > 0) {
-            width = sum / static_cast<double>(count);
-        }
-    }
-    recognized->setWidth(width);
+    recognized->setWidth(recognizedShapeWidth(*stroke));
 
     // snapping
     if (control->getSettings()->getSnapRecognizedShapesEnabled()) {

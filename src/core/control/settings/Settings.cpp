@@ -693,8 +693,9 @@ void Settings::parseItem(xmlDocPtr doc, xmlNodePtr cur) {
     } else if (xmlStrcmp(name, reinterpret_cast<const xmlChar*>("strokeHoldRecognizerEnabled")) == 0) {
         this->strokeHoldRecognizerEnabled = xmlStrcmp(value, reinterpret_cast<const xmlChar*>("true")) == 0;
     } else if (xmlStrcmp(name, reinterpret_cast<const xmlChar*>("strokeHoldRecognizerDelay")) == 0) {
-        this->strokeHoldRecognizerDelay =
-                static_cast<unsigned int>(g_ascii_strtoull(reinterpret_cast<const char*>(value), nullptr, 10));
+        setStrokeHoldRecognizerDelay(static_cast<unsigned int>(
+                std::min<guint64>(g_ascii_strtoull(reinterpret_cast<const char*>(value), nullptr, 10),
+                                  MAX_STROKE_HOLD_RECOGNIZER_DELAY)));
     } else if (xmlStrcmp(name, reinterpret_cast<const xmlChar*>("restoreLineWidthEnabled")) == 0) {
         this->restoreLineWidthEnabled = xmlStrcmp(value, reinterpret_cast<const xmlChar*>("true")) == 0;
     } else if (xmlStrcmp(name, reinterpret_cast<const xmlChar*>("preferredLocale")) == 0) {
@@ -2334,7 +2335,11 @@ void Settings::setStrokeHoldRecognizerEnabled(bool enabled) { this->strokeHoldRe
 
 auto Settings::getStrokeHoldRecognizerEnabled() const -> bool { return this->strokeHoldRecognizerEnabled; }
 
-void Settings::setStrokeHoldRecognizerDelay(unsigned int timeInMs) { this->strokeHoldRecognizerDelay = timeInMs; }
+void Settings::setStrokeHoldRecognizerDelay(unsigned int timeInMs) {
+    // A delay of 0 would recognize the stroke as soon as it starts
+    this->strokeHoldRecognizerDelay =
+            std::clamp(timeInMs, MIN_STROKE_HOLD_RECOGNIZER_DELAY, MAX_STROKE_HOLD_RECOGNIZER_DELAY);
+}
 
 auto Settings::getStrokeHoldRecognizerDelay() const -> unsigned int { return this->strokeHoldRecognizerDelay; }
 

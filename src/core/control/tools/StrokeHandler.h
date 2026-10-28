@@ -11,8 +11,9 @@
 
 #pragma once
 
-#include <memory>  // for unique_ptr
-#include <vector>  // for vector
+#include <memory>    // for unique_ptr
+#include <optional>  // for optional
+#include <vector>    // for vector
 
 #include <gdk/gdk.h>  // for GdkEventKey
 
@@ -123,21 +124,26 @@ private:
     void recognizeHeldStroke();
     void updateHeldShape(const Point& penPos);
     void updateHeldShape(const Point& penPos, Range repaint);
+    /// Whether the held shape can replace the stroke when the pen is lifted (and is not, e.g., a line of length 0)
+    bool isUsableHeldShape() const;
 
     /// Pen movements smaller than this (in screen pixels) still count as holding still
     static constexpr double HOLD_TOLERANCE = 4.0;
     /// Rotations smaller than this (in radians) are ignored, so that resizing a held shape does not tilt it
     static constexpr double HELD_SHAPE_ROTATION_DEADZONE = 0.12;
     static constexpr double MIN_HELD_SHAPE_SCALE = 0.05;
+    /// Held lines shorter than this (in screen pixels) are dropped in favour of the hand-drawn stroke
+    static constexpr double MIN_HELD_LINE_LENGTH = 2 * HOLD_TOLERANCE;
 
     xoj::util::GSourceURef holdTimer;
     Point holdWatchPoint;  ///< Where the pen was when the timer was last restarted
     Point lastPenPoint;    ///< Latest pen position (not snapped)
     double holdZoom = 1.0;
 
-    std::unique_ptr<Stroke> heldShape;  ///< The recognized shape following the pen, if any
-    std::vector<Point> heldShapeBase;   ///< Its points at the moment it was recognized
-    Point heldShapeGrab;                ///< The pen position at that moment
-    Point heldShapeCenter;              ///< Centre for scaling and rotating closed shapes
+    std::unique_ptr<Stroke> heldShape;    ///< The recognized shape following the pen, if any
+    std::vector<Point> heldShapeBase;     ///< Its points at the moment it was recognized
+    Point heldShapeGrab;                  ///< The pen position at that moment
+    Point heldShapeCenter;                ///< Centre for scaling and rotating closed shapes
+    std::optional<double> heldShapeTilt;  ///< For polygons: how far (in radians) their longest side is from level
     bool heldShapeIsLine = false;
 };

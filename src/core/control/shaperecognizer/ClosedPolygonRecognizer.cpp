@@ -67,6 +67,19 @@ auto turnAngle(const P& a, const P& b, const P& c) -> double {
     return std::fabs(std::remainder(a2 - a1, 2 * M_PI));
 }
 
+/// Whether the segments ab and cd cross each other
+auto segmentsCross(const P& a, const P& b, const P& c, const P& d) -> bool {
+    auto side = [](const P& o, const P& p, const P& q) {
+        return (p.x - o.x) * (q.y - o.y) - (p.y - o.y) * (q.x - o.x);
+    };
+    return side(a, b, c) * side(a, b, d) < 0 && side(c, d, a) * side(c, d, b) < 0;
+}
+
+/// Whether a quadrilateral crosses itself (a "bow tie"); triangles never do
+auto selfIntersecting(const std::vector<P>& v) -> bool {
+    return v.size() == 4 && (segmentsCross(v[0], v[1], v[2], v[3]) || segmentsCross(v[1], v[2], v[3], v[0]));
+}
+
 auto polygonArea(const std::vector<P>& v) -> double {
     double area = 0;
     for (size_t i = 0; i < v.size(); i++) {
@@ -369,6 +382,10 @@ auto ClosedPolygonRecognizer::recognize(const Stroke* stroke) -> std::unique_ptr
 
     if (v.size() != 3 && v.size() != 4) {
         RDEBUG("closed polygon: %zu corners", v.size());
+        return nullptr;
+    }
+    if (selfIntersecting(v)) {
+        RDEBUG("closed polygon: crosses itself");
         return nullptr;
     }
     if (polygonArea(v) < MIN_AREA * diag * diag) {

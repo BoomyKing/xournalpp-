@@ -26,6 +26,17 @@ constexpr double RIGHT_ANGLE_TOLERANCE = 20 * M_PI / 180;  ///< quadrilaterals t
 constexpr double CORNER_MARGIN = 0.15;                     ///< corners of a recognized polygon may lie this far outside
 constexpr double STRICT_MEAN_FIT_TOLERANCE = 0.06;         ///< mean distance from the stroke to a recognized polygon
 constexpr size_t MAX_POINTS = 1500;                        ///< longer strokes are subsampled
+/// At most this part of the stroke's length may be cut off as lead-in hook or overshoot
+constexpr double MAX_CUT_FRACTION = 0.25;
+/// ...and it must stay this close to the polygon (relative to the diagonal)
+constexpr double MAX_CUT_DISTANCE = 0.2;
+/// Area enclosed by the stroke relative to the polygon's area: lower means it winds both ways, like an 8
+constexpr double MIN_AREA_RATIO = 0.6;
+/// Like MIN_CORNER_SHARPNESS, but for the bluntest single corner
+constexpr double MIN_SINGLE_CORNER_SHARPNESS = 0.3;
+/// Smaller strokes (in pt, about 7 mm) are left to the strict recognizer: at handwriting size the corners of a
+/// letter can't be told from the curves of a hasty polygon
+constexpr double MIN_DIAGONAL = 20.0;
 
 struct P {
     double x, y;
@@ -80,6 +91,51 @@ auto selfIntersecting(const std::vector<P>& v) -> bool {
     return v.size() == 4 && (segmentsCross(v[0], v[1], v[2], v[3]) || segmentsCross(v[1], v[2], v[3], v[0]));
 }
 
+/// Whether the stroke crosses itself, ignoring the ends (where a closed shape may overlap its start)
+auto loopCrossesItself(const std::vector<P>& loop) -> bool {
+    constexpr size_t SAMPLES = 160;
+    constexpr double END_ZONE = 0.1;        ///< crossings within this part of the length from either end are ignored
+    constexpr double MIN_SEPARATION = 0.2;  ///< ...and between parts closer than this along the stroke
+    const size_t step = std::max<size_t>(1, loop.size() / SAMPLES);
+    std::vector<P> q;
+    for (size_t i = 0; i < loop.size(); i += step) {
+        q.push_back(loop[i]);
+    }
+    if (q.back().x != loop.back().x || q.back().y != loop.back().y) {
+        q.push_back(loop.back());
+    }
+    std::vector<double> at(q.size(), 0.0);  // distance along the stroke
+    for (size_t i = 1; i < q.size(); i++) {
+        at[i] = at[i - 1] + dist(q[i - 1], q[i]);
+    }
+    const double total = at.back();
+    auto inMiddle = [&](size_t i) { return at[i] > END_ZONE * total && at[i + 1] < (1 - END_ZONE) * total; };
+    for (size_t i = 0; i + 1 < q.size(); i++) {
+        if (!inMiddle(i)) {
+            continue;
+        }
+        for (size_t j = i + 2; j + 1 < q.size(); j++) {
+            // Jitter makes the stroke cross itself locally: only crossings of distant parts count
+            if (inMiddle(j) && at[j] - at[i + 1] > MIN_SEPARATION * total &&
+                segmentsCross(q[i], q[i + 1], q[j], q[j + 1])) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+/// Area enclosed by the stroke, counting parts that wind the other way negatively (shoelace formula)
+auto signedArea(const std::vector<P>& v) -> double {
+    double area = 0;
+    for (size_t i = 0; i < v.size(); i++) {
+        const P& a = v[i];
+        const P& b = v[(i + 1) % v.size()];
+        area += a.x * b.y - b.x * a.y;
+    }
+    return area / 2;
+}
+
 auto polygonArea(const std::vector<P>& v) -> double {
     double area = 0;
     for (size_t i = 0; i < v.size(); i++) {
@@ -95,7 +151,7 @@ auto polygonArea(const std::vector<P>& v) -> double {
  * relative to the polygon's own corner angles. About 1 for a hand-drawn polygon (the stroke turns at the corners),
  * clearly less for an ellipse traced with a polygon (the stroke turns gradually everywhere).
  */
-auto cornerSharpness(const std::vector<P>& loop, const std::vector<P>& v) -> double {
+auto cornerSharpness(const std::vector<P>& loop, const std::vector<P>& v, double* weakest = nullptr) -> double {
     constexpr long N = 240;      // resampled points along the stroke
     constexpr long HEADING = 5;  // direction is measured over +-2% of the perimeter, smoothing out jitter
     constexpr long CORNER = 12;  // turning counted within +-5% of the perimeter around each corner
@@ -126,6 +182,7 @@ auto cornerSharpness(const std::vector<P>& loop, const std::vector<P>& v) -> dou
         return std::atan2(b.y - a.y, b.x - a.x);
     };
     double strokeTurn = 0, polygonTurn = 0;
+    double minRatio = std::numeric_limits<double>::max();
     for (size_t i = 0; i < v.size(); i++) {
         long nearest = 0;
         double nearestDist = std::numeric_limits<double>::max();
@@ -134,8 +191,16 @@ auto cornerSharpness(const std::vector<P>& loop, const std::vector<P>& v) -> dou
                 nearestDist = d, nearest = k;
             }
         }
-        strokeTurn += std::fabs(std::remainder(heading(nearest + CORNER) - heading(nearest - CORNER), 2 * M_PI));
-        polygonTurn += turnAngle(v[(i + v.size() - 1) % v.size()], v[i], v[(i + 1) % v.size()]);
+        const double sTurn = std::fabs(std::remainder(heading(nearest + CORNER) - heading(nearest - CORNER), 2 * M_PI));
+        const double pTurn = turnAngle(v[(i + v.size() - 1) % v.size()], v[i], v[(i + 1) % v.size()]);
+        strokeTurn += sTurn;
+        polygonTurn += pTurn;
+        if (pTurn > 0) {
+            minRatio = std::min(minRatio, sTurn / pTurn);
+        }
+    }
+    if (weakest) {
+        *weakest = minRatio == std::numeric_limits<double>::max() ? 0 : minRatio;
     }
     return polygonTurn > 0 ? strokeTurn / polygonTurn : 0;
 }
@@ -287,7 +352,7 @@ auto ClosedPolygonRecognizer::recognize(const Stroke* stroke) -> std::unique_ptr
         minY = std::min(minY, p.y), maxY = std::max(maxY, p.y);
     }
     const double diag = std::hypot(maxX - minX, maxY - minY);
-    if (diag <= 0) {
+    if (!(diag >= MIN_DIAGONAL)) {
         return nullptr;
     }
 
@@ -309,8 +374,28 @@ auto ClosedPolygonRecognizer::recognize(const Stroke* stroke) -> std::unique_ptr
         RDEBUG("closed polygon: not closed");
         return nullptr;
     }
+    // Only a short lead-in hook or overshoot may be cut off. Otherwise a handwritten letter with a small loop
+    // (d, b, beta, 8...) would become the loop's shape, with the rest of the letter thrown away.
+    {
+        double total = 0, cut = 0;
+        for (size_t i = 0; i + 1 < n; i++) {
+            const double d = dist(pts[i], pts[i + 1]);
+            total += d;
+            if (i < closeA || i >= closeB) {
+                cut += d;
+            }
+        }
+        if (cut > MAX_CUT_FRACTION * total) {
+            RDEBUG("closed polygon: too much of the stroke lies outside the loop");
+            return nullptr;
+        }
+    }
     std::vector<P> loop(pts.begin() + static_cast<std::ptrdiff_t>(closeA),
                         pts.begin() + static_cast<std::ptrdiff_t>(closeB) + 1);
+    if (loopCrossesItself(loop)) {
+        RDEBUG("closed polygon: the loop crosses itself (8, beta, infinity...)");
+        return nullptr;
+    }
 
     // 2. Start at a corner: the point farthest from the centre
     P c{0, 0};
@@ -393,10 +478,31 @@ auto ClosedPolygonRecognizer::recognize(const Stroke* stroke) -> std::unique_ptr
         return nullptr;
     }
 
+    // The two halves of a figure of eight wind in opposite directions and cancel out: the stroke encloses much
+    // less area than the polygon fitted to it. A drawn polygon encloses about as much.
+    if (std::fabs(signedArea(loop)) < MIN_AREA_RATIO * polygonArea(v)) {
+        RDEBUG("closed polygon: the stroke winds both ways (8, infinity...)");
+        return nullptr;
+    }
+
     // 4. The stroke must actually follow the polygon
     if (const auto f = fit(v); !fits(f)) {
         RDEBUG("closed polygon: poor fit (mean %.3f, max %.3f)", f.first, f.second);
         return nullptr;
+    }
+    // ...and so must the hook and overshoot that were cut off: they run along the polygon, not away from it
+    for (size_t k = 0; k < n; k++) {
+        if (k >= closeA && k <= closeB) {
+            continue;
+        }
+        double d = std::numeric_limits<double>::max();
+        for (size_t i = 0; i < v.size(); i++) {
+            d = std::min(d, distToSegment(pts[k], v[i], v[(i + 1) % v.size()]));
+        }
+        if (d > MAX_CUT_DISTANCE * diag) {
+            RDEBUG("closed polygon: the stroke leaves the polygon before or after the loop");
+            return nullptr;
+        }
     }
 
     // 5. ...with straight sides and real corners. A hand-drawn straight side wobbles to both sides, while a circle or
@@ -439,8 +545,10 @@ auto ClosedPolygonRecognizer::recognize(const Stroke* stroke) -> std::unique_ptr
             }
         }
         const double average = total / static_cast<double>(v.size());
-        const double sharpness = cornerSharpness(loop, v);
-        if (average > MAX_BULGE || sharpness < MIN_CORNER_SHARPNESS) {
+        double weakest = 0;
+        const double sharpness = cornerSharpness(loop, v, &weakest);
+        // (a thin ellipse fitted with a diamond has two sharp ends, but the stroke hardly turns at the other two)
+        if (average > MAX_BULGE || sharpness < MIN_CORNER_SHARPNESS || weakest < MIN_SINGLE_CORNER_SHARPNESS) {
             RDEBUG("closed polygon: round sides (bulge %.3f, corner sharpness %.2f)", average, sharpness);
             return nullptr;
         }

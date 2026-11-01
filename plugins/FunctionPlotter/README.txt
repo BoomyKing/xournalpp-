@@ -46,6 +46,11 @@ Things you can write:
                                       (several named graphs: each curve gets its name)
    x = cos(t), y = sin(t), 0 <= t <= 2pi, y >= 0    (parametric curve, here the top half)
 Only formulas named x and y make a parametric curve; any other names are separate graphs.
+   0 <= t <= 0.6, v(t) = 3t           (piecewise: one line per piece, each with its own range;
+   0.6 <= t <= 2, v(t) = 1.8           pieces with the same name are one function in one colour)
+   y = -x if x <= 0                   ("if" works too; a line with only a condition
+   y = x^2 if 0 <= x <= 2              applies to every piece)
+   -3 <= x <= 3
    y = -2^x, -10 <= x <= 10, |y| < 100   (absolute values, in formulas and conditions)
    y = (-2)^x, -10 <= x <= 10            (only exists at whole numbers: drawn as dots)
 Note: -2^x means -(2^x), like in maths. Write (-2)^x for a negative base.
@@ -57,7 +62,8 @@ TeX FORMULAS (the TeX tool)
 Select the TeX formula with the selection tool (or Edit > Select All), then press the button.
 Write it the normal LaTeX way, e.g.
    y = \frac{1}{2}(100 - x^{2}),\; 0 \le x \le 64,\; y > 0
-\frac, \sqrt, \sqrt[3]{}, \cdot, \le, \ge, \pi, \sin x, \left( \right) and \text{for} are understood.
+\frac, \sqrt, \sqrt[3]{}, \cdot, \le, \ge, \pi, \sin x, \left( \right) and \text{for} are understood,
+and piecewise functions:  v(t) = \begin{cases} 3t & 0 \le t \le 0.6 \\ 1.8 & 0.6 \le t \le 2 \end{cases}
 (Reading the TeX formula goes through the clipboard, so after this the clipboard holds
 the copied formula.)
 Symbols like −  ≤  ²  π  √ also work. 2t, 3(t+1) and 2πx (or 2pix) work without the *.
@@ -87,6 +93,11 @@ CHANGES FROM THE ORIGINAL (github.com/xournalpp/xournalpp/pull/3811)
 - Replaced the luaxp parser with a small, sandboxed one with clear error messages.
 - Graph placed on the current page and selected; settings remembered; cm/mm units;
   fixed GTK warnings and a checkbox that greyed out the wrong field.
+
+NEW IN 2.8
+- Piecewise functions: one line per piece with its own range, or \begin{cases} in TeX.
+- Short ranges get finer ticks (0.5 steps for 0..2), and the number at the end of each axis
+  is no longer hidden under the arrow.
 
 FIXES IN 2.7
 - f(t) = ..., g(t) = ... draws two graphs over t (it drew one parametric curve, f against g).

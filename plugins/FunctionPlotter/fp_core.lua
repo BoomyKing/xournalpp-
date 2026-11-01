@@ -271,7 +271,7 @@ end
 
 local function trim(s) return (s:gsub("^%s+", ""):gsub("%s+$", "")) end
 
--- Splits on , ; newlines { } and the words for/where/when, but not inside brackets.
+-- Splits on , ; newlines { } and the words for/where/when/with/if, but not inside brackets.
 local function splitParts(text)
   local parts, buf, depth = {}, {}, 0
   local i, n = 1, #text
@@ -285,7 +285,8 @@ local function splitParts(text)
     local word = text:match("^[%a_][%w_]*", i)
     if word then
       local before = i == 1 and " " or text:sub(i - 1, i - 1)
-      if (word == "for" or word == "where" or word == "when" or word == "with") and not before:match("[%w_]") then
+      if (word == "for" or word == "where" or word == "when" or word == "with" or word == "if")
+          and not before:match("[%w_]") then
         flush()
       else
         buf[#buf + 1] = word
@@ -411,11 +412,83 @@ end
 ---   y = x^2; y = 2x + 1             (several functions on the same axes)
 --- Returns { curves = {{exprX, exprY}...}, var, labelX, labelY, tMin, tMax, clip = {xMin, xMax, yMin, yMax} }
 --- (tMin/tMax may be nil, clip values may be nil), or nil plus an error message.
+local parseOne
+
+-- Splits into lines at new lines and semicolons that aren't inside brackets.
+local function splitLines(text)
+  local lines, depth, start = {}, 0, 1
+  for i = 1, #text do
+    local c = text:sub(i, i)
+    if c == "(" or c == "[" then depth = depth + 1
+    elseif c == ")" or c == "]" then depth = math.max(0, depth - 1)
+    elseif depth == 0 and (c == "\n" or c == ";") then
+      lines[#lines + 1] = text:sub(start, i - 1)
+      start = i + 1
+    end
+  end
+  lines[#lines + 1] = text:sub(start)
+  local out = {}
+  for _, l in ipairs(lines) do if trim(l) ~= "" then out[#out + 1] = l end end
+  return out
+end
+
 function M.parseFormula(text)
   if type(text) ~= "string" or trim(text) == "" then
     return nil, "There's no formula. Write something like  y = 100 - t^2, 0 <= t <= 64"
   end
   text = M.normalize(text)
+
+  -- Piecewise: several lines that each have a formula and their own range, e.g.
+  --   0 <= t <= 0.6, v(t) = 3t
+  --   0.6 <= t <= 2, v(t) = 1.8
+  -- Lines with only conditions apply to every piece. Without at least two such lines, all conditions apply to all
+  -- formulas (y = x^2; y = 2x + 1; -2 <= x <= 2).
+  local formulaLines, condLines, withRange = {}, {}, 0
+  for _, line in ipairs(splitLines(text)) do
+    local hasFormula, hasCond = false, false
+    for _, part in ipairs(splitParts(line)) do
+      if isCondition(part) then hasCond = true else hasFormula = true end
+    end
+    if hasFormula then
+      formulaLines[#formulaLines + 1] = line
+      if hasCond then withRange = withRange + 1 end
+    else
+      condLines[#condLines + 1] = line
+    end
+  end
+  if withRange < 2 then return parseOne(text) end
+
+  local shared = table.concat(condLines, "\n")
+  local result
+  for i, line in ipairs(formulaLines) do
+    local piece, err = parseOne(line .. "\n" .. shared)
+    if not piece then
+      return nil, (#formulaLines > 1 and ("Line " .. i .. ": ") or "") .. err
+    end
+    if not result then
+      result = { curves = {}, var = piece.var, parametric = piece.parametric, labelX = piece.labelX,
+        labelY = piece.labelY, tMin = piece.tMin, tMax = piece.tMax, clip = {} }
+    elseif piece.var ~= result.var then
+      return nil, string.format("The lines use different variables (%s and %s).", result.var, piece.var)
+    else
+      if piece.labelY ~= result.labelY then result.labelY = "y" end
+      if piece.labelX ~= result.labelX then result.labelX = result.var end
+      result.tMin = (result.tMin and piece.tMin) and math.min(result.tMin, piece.tMin) or nil
+      result.tMax = (result.tMax and piece.tMax) and math.max(result.tMax, piece.tMax) or nil
+    end
+    for _, c in ipairs(piece.curves) do
+      -- pieces with the same name (or no name) are parts of one function
+      c.group = piece.parametric and "(parametric)" or (c.name or "(unnamed)")
+      c.name = c.name or (not piece.parametric and piece.labelY) or nil
+      c.tMin, c.tMax, c.clip = piece.tMin, piece.tMax, piece.clip
+      result.curves[#result.curves + 1] = c
+    end
+  end
+  return result
+end
+
+--- Reads one formula (or several sharing the same conditions).
+function parseOne(text)
 
   local formulas, conds, condOrder = {}, {}, {}
   for _, part in ipairs(splitParts(text)) do
@@ -734,6 +807,21 @@ end
 --- Converts a LaTeX formula (as typed in the TeX tool) to the plain form parseFormula reads.
 function M.fromLatex(tex)
   tex = tex:gsub("\\%[", ""):gsub("\\%]", ""):gsub("\\%(", "("):gsub("\\%)", ")")
+  -- v(t) = \begin{cases} 3t & 0 \le t \le 0.6 \\ 1.8 & 0.6 \le t \le 2 \end{cases}
+  --   ->  one line per case:  v(t) = 3t, 0 <= t <= 0.6  /  v(t) = 1.8, 0.6 <= t <= 2
+  local lhs, body, rest = tex:match("^(.-)=%s*\\begin%s*{cases}(.-)\\end%s*{cases}(.*)$")
+  if lhs then
+    local rows = {}
+    for row in (body .. "\\\\"):gmatch("(.-)\\\\") do
+      if not row:match("^%s*$") then
+        local expr, cond = row:match("^(.-)&(.*)$")
+        rows[#rows + 1] = lhs .. "=" .. (expr or row) .. (cond and (", " .. cond) or "")
+      end
+    end
+    -- anything after the cases (", -2 \le x") applies to every case: give it a line of its own
+    rest = rest:gsub("^%s*[,;]?", "")
+    tex = table.concat(rows, " \\\\ ") .. (rest:match("%S") and (" \\\\ " .. rest) or "")
+  end
   return texToPlain(tex)
 end
 
@@ -945,6 +1033,7 @@ local ARROW = 8          -- arrow length in pt
 local DOT_RADIUS = 1.8   -- pt, for graphs that only exist at whole numbers
 local MAX_DOTS = 2000    -- whole numbers checked at most
 local MAX_LINES = 60     -- more ticks/grid lines than this per axis gets a coarser step
+local MIN_TICKS = 4      -- fewer ticks than this per axis gets a finer step
 
 -- Picks the tick step for one axis. Returns step, wasAdjusted.
 -- smallest 1/2/5 x 10^k that is >= v
@@ -963,6 +1052,11 @@ local function tickStep(unit, lo, hi, lengthPt, minGap)
   local minStep = range / math.max(lengthPt, 1) * minGap -- divide first: range * minGap may overflow
   if not finite(unit) or unit <= 0 or range / unit > MAX_LINES or unit < minStep then
     return niceStepUp(math.max(minStep, range / MAX_LINES)), true
+  end
+  -- too few ticks to read the graph (0 <= t <= 2 with a step of 1): use a finer step, if there's room
+  if range / unit < MIN_TICKS then
+    local finer = math.max(M.niceStep(range / (MIN_TICKS + 2)), niceStepUp(minStep))
+    if finer < unit then return finer, true end
   end
   return unit, false
 end
@@ -990,13 +1084,28 @@ local function textWidth(text, size) return #text * size * 0.6 end
 function M.build(cfg)
   local curveDefs = cfg.curves or { { exprX = cfg.exprX, exprY = cfg.exprY } }
   local var = cfg.var
-  local single = #curveDefs == 1
+  -- Curves of the same group are pieces of one function (v(t) = 3t for 0 <= t <= 0.6, v(t) = 1.8 after that):
+  -- they share a colour and a name. Otherwise every curve is a graph of its own.
+  local groupOf, groupNames, groupCount = {}, {}, 0
+  do
+    local seen = {}
+    for i, c in ipairs(curveDefs) do
+      local key = c.group or i
+      if not seen[key] then
+        groupCount = groupCount + 1
+        seen[key] = groupCount
+        groupNames[groupCount] = c.name
+      end
+      groupOf[i] = seen[key]
+    end
+  end
+  local single = groupCount == 1
   local funcs = {}
   for i, c in ipairs(curveDefs) do
     local fx, errX = M.compile(c.exprX, var)
-    if not fx then return nil, (single and "" or ("Formula " .. i .. ", ")) .. "x part: " .. errX end
+    if not fx then return nil, (#curveDefs == 1 and "" or ("Formula " .. i .. ", ")) .. "x part: " .. errX end
     local fy, errY = M.compile(c.exprY, var)
-    if not fy then return nil, (single and "" or ("Formula " .. i .. ": ")) .. errY end
+    if not fy then return nil, (#curveDefs == 1 and "" or ("Formula " .. i .. ": ")) .. errY end
     funcs[i] = { fx, fy }
   end
 
@@ -1010,9 +1119,20 @@ function M.build(cfg)
   if not (cfg.width > 0 and cfg.height > 0) then
     return nil, "Width and height must be bigger than 0."
   end
+  -- each curve may have its own range (pieces of a piecewise function); the rest use the overall one
+  local ranges = {}
+  for i, c in ipairs(curveDefs) do
+    local lo, hi = tMin, tMax
+    if c.tMin or c.tMax then lo, hi = M.resolveRange(c, tMin, tMax) end
+    if not (finite(lo) and finite(hi) and lo < hi and finite(hi - lo)) then
+      return nil, (#curveDefs == 1 and "" or ("Formula " .. i .. ": ")) .. "the start of the range must be smaller than the end."
+    end
+    ranges[i] = { lo, hi }
+  end
 
   local sampled, sampledTs = {}, {}
   for i, f in ipairs(funcs) do
+    local tMin, tMax = ranges[i][1], ranges[i][2]
     local pts, ts = M.sample(f[1], f[2], tMin, tMax, cfg.samples or 300)
     -- When the curve only exists on a small part of the range (sqrt(x) for -50 <= x <= 3), most samples are
     -- wasted and the curve looks angular: sample that part again, as finely as the whole range.
@@ -1029,12 +1149,15 @@ function M.build(cfg)
   local notes = {}
 
   -- conditions such as y > 0 cut the curve exactly where they stop holding
-  local c = cfg.clip or {}
-  local region = { xMin = c.xMin or -huge, xMax = c.xMax or huge, yMin = c.yMin or -huge, yMax = c.yMax or huge }
+  local regions = {}
+  for i, def in ipairs(curveDefs) do
+    local c = def.clip or cfg.clip or {}
+    regions[i] = { xMin = c.xMin or -huge, xMax = c.xMax or huge, yMin = c.yMin or -huge, yMax = c.yMax or huge }
+  end
   local pieces, anyDefined = {}, false
   for i, pts in ipairs(sampled) do
     for _, p in ipairs(pts) do if p then anyDefined = true break end end
-    pieces[i] = M.polylines(pts, region)
+    pieces[i] = M.polylines(pts, regions[i])
   end
 
   -- Some functions only exist at whole numbers, e.g. (-2)^x. Evaluate those exactly and draw them as dots
@@ -1044,6 +1167,7 @@ function M.build(cfg)
   for i, f in ipairs(funcs) do
     dots[i] = {}
     local pts = sampled[i]
+    local tMin, tMax, region = ranges[i][1], ranges[i][2], regions[i]
     local indexOf = {} -- whole numbers among the sampled parameter values -> their index
     for j, t in ipairs(sampledTs[i]) do
       if t == floor(t) then indexOf[t] = j end
@@ -1102,16 +1226,23 @@ function M.build(cfg)
     if xMin == huge then
       return nil, "No part of the curve meets all the conditions."
     end
-    local function pad(lo, hi)
+    -- The arrowhead covers the end of each axis, so leave a bit more room there: otherwise the number at the
+    -- end of the range (7 in 0 <= t <= 7) has no room
+    local function endRoom(lengthPt)
+      if not cfg.axes then return 0.05 end
+      local q = math.min(0.4, (2 * ARROW + 6) / math.max(lengthPt, 1))
+      return math.max(0.05, 1.1 * q / (1 - q))
+    end
+    local function pad(lo, hi, hiRoom)
       local span = hi - lo
       if span < 1e-12 * math.max(1, abs(lo), abs(hi)) then -- constant: give it some room
         local r = math.max(1, abs(lo) * 0.1)
         return lo - r, hi + r
       end
-      return lo - 0.05 * span, hi + 0.05 * span
+      return lo - 0.05 * span, hi + hiRoom * span
     end
-    xMin, xMax = pad(xMin, xMax)
-    yMin, yMax = pad(yMin, yMax)
+    xMin, xMax = pad(xMin, xMax, endRoom(cfg.width))
+    yMin, yMax = pad(yMin, yMax, endRoom(cfg.height))
     w = { xMin = xMin, xMax = xMax, yMin = yMin, yMax = yMax }
     if not (finite(xMin) and finite(xMax) and finite(yMin) and finite(yMax)
         and finite(xMax - xMin) and finite(yMax - yMin)) then
@@ -1202,16 +1333,20 @@ function M.build(cfg)
   -- Several curves: each gets its own colour so they can be told apart.
   local PALETTE = { 0x1a5fb4, 0xc01c28, 0x26a269, 0xe66100, 0x613583, 0x865e3c }
   local curves = 0
-  local curveEnds = {} -- where each curve ends on the page, for its name
+  local curveEnds = {} -- where each group's curve ends on the page (its piece reaching furthest), for its name
+  local endT = {}
   for i, lines in ipairs(pieces) do
     for _, line in ipairs(M.polylinesOf(lines, w)) do
       local xs, ys = {}, {}
       for j, p in ipairs(line) do xs[j], ys[j] = X(p[1]), Y(p[2]) end
-      curveEnds[i] = { xs[#xs], ys[#ys] }
+      local g = groupOf[i]
+      if not endT[g] or ranges[i][2] >= endT[g] then
+        curveEnds[g], endT[g] = { xs[#xs], ys[#ys] }, ranges[i][2]
+      end
       -- fill = -1: never fill the area under the curve, even if the pen has "fill" turned on
       local s = { x = xs, y = ys, tool = "pen", fill = -1 }
       if cfg.curveColor then s.color = cfg.curveColor end
-      if not single then s.color = PALETTE[(i - 1) % #PALETTE + 1] end
+      if not single then s.color = PALETTE[(groupOf[i] - 1) % #PALETTE + 1] end
       if cfg.curveWidth then s.width = cfg.curveWidth end
       strokes[#strokes + 1] = s
       curves = curves + 1
@@ -1227,7 +1362,7 @@ function M.build(cfg)
         end
         local s = { x = xs, y = ys, tool = "pen", fill = 255, width = 0.5 }
         if cfg.curveColor then s.color = cfg.curveColor end
-        if not single then s.color = PALETTE[(i - 1) % #PALETTE + 1] end
+        if not single then s.color = PALETTE[(groupOf[i] - 1) % #PALETTE + 1] end
         strokes[#strokes + 1] = s
         curves = curves + 1
       end
@@ -1260,9 +1395,10 @@ function M.build(cfg)
   -- several named graphs (f(t) = ..., g(t) = ...): write each name at the end of its curve, in its colour
   if not single and cfg.axes and cfg.axisLabels then
     local seen, named = {}, true
-    for _, c in ipairs(curveDefs) do
-      if not c.name or seen[c.name] then named = false break end
-      seen[c.name] = true
+    for g = 1, groupCount do
+      local nm = groupNames[g]
+      if not nm or seen[nm] then named = false break end
+      seen[nm] = true
     end
     if named then
       local placed = {}
@@ -1273,22 +1409,22 @@ function M.build(cfg)
         end
         return false
       end
-      for i, c in ipairs(curveDefs) do
-        local e = curveEnds[i]
+      for g = 1, groupCount do
+        local e, name = curveEnds[g], groupNames[g]
         if e then
-          local tw = textWidth(c.name, size)
+          local tw = textWidth(name, size)
           local tx = e[1] + 3
           if tx + tw > right then tx = e[1] - tw - 3 end
           local ty = clamp(e[2] - lineH, top, bottom - lineH)
           -- curves that end at the same place (or close): put the names below each other
           local tries = 0
-          while overlaps(tx, ty, tw) and tries < #curveDefs do
+          while overlaps(tx, ty, tw) and tries < groupCount do
             ty = ty + lineH
             if ty > bottom - lineH then ty = top end
             tries = tries + 1
           end
           placed[#placed + 1] = { tx, ty, tw }
-          texts[#texts + 1] = { text = c.name, font = font, color = PALETTE[(i - 1) % #PALETTE + 1], x = tx, y = ty }
+          texts[#texts + 1] = { text = name, font = font, color = PALETTE[(g - 1) % #PALETTE + 1], x = tx, y = ty }
         end
       end
     end

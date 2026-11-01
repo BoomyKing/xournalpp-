@@ -147,6 +147,7 @@ local function plotConfig(s, parsed, lineOnly, place)
   cfg.curves, cfg.var = parsed.curves, parsed.var
   cfg.autoLabelX, cfg.autoLabelY = parsed.labelX, parsed.labelY
   cfg.tMin, cfg.tMax = core.resolveRange(parsed, s.tMin, s.tMax)
+  cfg.givenTMin, cfg.givenTMax = parsed.tMin, parsed.tMax -- the range written in the formula: its ends are key values
   cfg.clip = parsed.clip
   cfg.width, cfg.height = s.width * factor, s.height * factor
   cfg.fontName, cfg.fontSize = splitFont(s.font)

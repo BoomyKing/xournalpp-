@@ -923,6 +923,17 @@ end
 
 local function clamp(v, lo, hi) return math.max(lo, math.min(hi, v)) end
 
+--- Formats a key value (a range end, a crossing) with up to 4 significant digits: 1.8, 0.6, 51, 0.3333.
+function M.formatKey(v)
+  local s = string.format("%.4g", v)
+  if s:find("e") then
+    local mant, ex = s:match("^(.-)e(.*)$")
+    s = mant .. "e" .. tostring(tonumber(ex))
+  end
+  if s == "-0" then s = "0" end
+  return s
+end
+
 ---------------------------------------------------------------------------
 -- Sampling and clipping
 ---------------------------------------------------------------------------
@@ -1034,6 +1045,7 @@ local DOT_RADIUS = 1.8   -- pt, for graphs that only exist at whole numbers
 local MAX_DOTS = 2000    -- whole numbers checked at most
 local MAX_LINES = 60     -- more ticks/grid lines than this per axis gets a coarser step
 local MIN_TICKS = 4      -- fewer ticks than this per axis gets a finer step
+local MAX_KEY_POINTS = 10 -- key values marked at most
 
 -- Picks the tick step for one axis. Returns step, wasAdjusted.
 -- smallest 1/2/5 x 10^k that is >= v
@@ -1329,6 +1341,90 @@ function M.build(cfg)
     end
   end
 
+  -- Key values: where a range written in the formula starts and ends (0.6 and 1.8 in "v(t) = 3t, 0 <= t <= 0.6"),
+  -- and where two graphs cross. They get their numbers on the axes and dashed guide lines.
+  local keyPts = {}
+  if cfg.axes and cfg.numbers and cfg.keyValues ~= false then
+    local spanX, spanY = w.xMax - w.xMin, w.yMax - w.yMin
+    local function addKey(x, y)
+      if not (finite(x) and finite(y)) or #keyPts >= MAX_KEY_POINTS then return end
+      if x < w.xMin or x > w.xMax or y < w.yMin or y > w.yMax then return end
+      for _, k in ipairs(keyPts) do
+        if abs(k[1] - x) <= 1e-9 * spanX and abs(k[2] - y) <= 1e-9 * spanY then return end
+      end
+      keyPts[#keyPts + 1] = { x, y }
+    end
+    for i, c in ipairs(curveDefs) do
+      local lo, hi = c.tMin, c.tMax
+      if not (lo or hi) then lo, hi = cfg.givenTMin, cfg.givenTMax end
+      for _, t in ipairs({ lo or false, hi or false }) do
+        if t then addKey(funcs[i][1](t), funcs[i][2](t)) end
+      end
+    end
+    -- crossings of graphs of the same variable (not of pieces of one function)
+    for i = 1, #curveDefs do
+      for j = i + 1, #curveDefs do
+        local fi, fj = funcs[i][2], funcs[j][2]
+        if groupOf[i] ~= groupOf[j] and curveDefs[i].exprX == var and curveDefs[j].exprX == var then
+          local lo, hi = math.max(ranges[i][1], ranges[j][1]), math.min(ranges[i][2], ranges[j][2])
+          local found = {}
+          local function diff(t)
+            local a, b = fi(t), fj(t)
+            return a and b and a - b
+          end
+          if lo < hi then
+            local N = 400
+            local prevT, prevD
+            for k = 0, N do
+              local t = lo + (hi - lo) * k / N
+              local d = diff(t)
+              if d == 0 then
+                found[#found + 1] = t
+                d = nil -- don't count it again with the next sample
+              elseif d and prevD and (prevD < 0) ~= (d < 0) then
+                local t0, t1, d0 = prevT, t, prevD
+                for _ = 1, 60 do
+                  local m = (t0 + t1) / 2
+                  local dm = diff(m)
+                  if not dm then break end
+                  if dm == 0 then t0, t1 = m, m break end
+                  if (dm < 0) == (d0 < 0) then t0, d0 = m, dm else t1 = m end
+                end
+                local tc = (t0 + t1) / 2
+                local a, dc = fi(tc), diff(tc)
+                -- a real crossing, not a jump across a pole (1/x)
+                if a and dc and abs(dc) <= 1e-6 * (1 + abs(a)) then found[#found + 1] = tc end
+              end
+              prevT, prevD = t, d
+            end
+          end
+          if #found <= 4 then
+            for _, t in ipairs(found) do addKey(funcs[i][1](t), fi(t)) end
+          end
+        end
+      end
+    end
+    -- dashed guide lines from each key point to the axes, and tick marks
+    for _, k in ipairs(keyPts) do
+      local px, py = X(k[1]), Y(k[2])
+      local onYAxis, onXAxis = abs(px - ax) < 0.5, abs(py - ay) < 0.5
+      if not onYAxis and not onXAxis then
+        strokes[#strokes + 1] = { x = { px, px }, y = { py, ay }, width = 0.5, color = gridColor, lineStyle = "dash",
+          tool = "pen" }
+        strokes[#strokes + 1] = { x = { px, ax }, y = { py, py }, width = 0.5, color = gridColor, lineStyle = "dash",
+          tool = "pen" }
+      end
+      if not onYAxis then
+        strokes[#strokes + 1] = { x = { px, px }, y = { ay - th / 2, ay + th / 2 }, width = cfg.axisWidth,
+          color = axisColor, lineStyle = "plain", tool = "pen" }
+      end
+      if not onXAxis then
+        strokes[#strokes + 1] = { x = { ax - th / 2, ax + th / 2 }, y = { py, py }, width = cfg.axisWidth,
+          color = axisColor, lineStyle = "plain", tool = "pen" }
+      end
+    end
+  end
+
   -- the curves, drawn last so they sit on top. One curve: current pen colour and width.
   -- Several curves: each gets its own colour so they can be told apart.
   local PALETTE = { 0x1a5fb4, 0xc01c28, 0x26a269, 0xe66100, 0x613583, 0x865e3c }
@@ -1375,20 +1471,63 @@ function M.build(cfg)
   local size = cfg.fontSize or 8
   local font = { name = cfg.fontName or "Sans", size = size }
   if cfg.numbers then
+    -- key values first: the regular numbers make way for them
+    local keyX, keyY = {}, {} -- {page position, text}
+    local function addLabel(list, pos, s)
+      for _, l in ipairs(list) do if abs(l[1] - pos) < 0.5 then return end end
+      list[#list + 1] = { pos, s }
+    end
+    for _, k in ipairs(keyPts) do
+      local px, py = X(k[1]), Y(k[2])
+      if abs(px - ax) >= 0.5 then addLabel(keyX, px, M.formatKey(k[1])) end
+      if abs(py - ay) >= 0.5 then addLabel(keyY, py, M.formatKey(k[2])) end
+    end
+    local function freeX(px, s)
+      for _, l in ipairs(keyX) do
+        if abs(l[1] - px) < (textWidth(s, size) + textWidth(l[2], size)) / 2 + 2 then return false end
+      end
+      return true
+    end
+    local function freeY(py)
+      for _, l in ipairs(keyY) do if abs(l[1] - py) < 1.1 * size then return false end end
+      return true
+    end
     for _, v in ipairs(xTicks) do
       local px = X(v)
-      if px < right - arrowRoom and abs(v - axisYval) > xStep * 1e-9 then
-        local s = M.formatNumber(v, xStep)
+      local s = M.formatNumber(v, xStep)
+      if px < right - arrowRoom and abs(v - axisYval) > xStep * 1e-9 and freeX(px, s) then
         texts[#texts + 1] = { text = s, font = font, color = axisColor,
           x = px - textWidth(s, size) / 2, y = ay + th / 2 + 1 }
       end
     end
     for _, v in ipairs(yTicks) do
       local py = Y(v)
-      if py > top + arrowRoom and abs(v - axisXval) > yStep * 1e-9 then
+      if py > top + arrowRoom and abs(v - axisXval) > yStep * 1e-9 and freeY(py) then
         local s = M.formatNumber(v, yStep)
         texts[#texts + 1] = { text = s, font = font, color = axisColor,
           x = ax - th / 2 - 2 - textWidth(s, size), y = py - 0.75 * size }
+      end
+    end
+    -- key labels that would overlap each other: keep the first
+    local placedX, placedY = {}, {}
+    for _, l in ipairs(keyX) do
+      local ok = true
+      for _, p in ipairs(placedX) do
+        if abs(p[1] - l[1]) < (textWidth(p[2], size) + textWidth(l[2], size)) / 2 + 2 then ok = false end
+      end
+      if ok then
+        placedX[#placedX + 1] = l
+        texts[#texts + 1] = { text = l[2], font = font, color = axisColor,
+          x = l[1] - textWidth(l[2], size) / 2, y = ay + th / 2 + 1 }
+      end
+    end
+    for _, l in ipairs(keyY) do
+      local ok = true
+      for _, p in ipairs(placedY) do if abs(p[1] - l[1]) < 1.1 * size then ok = false end end
+      if ok then
+        placedY[#placedY + 1] = l
+        texts[#texts + 1] = { text = l[2], font = font, color = axisColor,
+          x = ax - th / 2 - 2 - textWidth(l[2], size), y = l[1] - 0.75 * size }
       end
     end
   end

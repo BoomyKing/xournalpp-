@@ -94,6 +94,11 @@ CHANGES FROM THE ORIGINAL (github.com/xournalpp/xournalpp/pull/3811)
 - Graph placed on the current page and selected; settings remembered; cm/mm units;
   fixed GTK warnings and a checkbox that greyed out the wrong field.
 
+NEW IN 2.9
+- Key values: where a range you wrote starts and ends (0.6 and 1.8 in a piecewise function,
+  21 and 91 at the ends of 0 <= t <= 7) and where two graphs cross get their numbers on the
+  axes and dashed guide lines. Turn them off by unticking "Numbers".
+
 NEW IN 2.8
 - Piecewise functions: one line per piece with its own range, or \begin{cases} in TeX.
 - Short ranges get finer ticks (0.5 steps for 0..2), and the number at the end of each axis

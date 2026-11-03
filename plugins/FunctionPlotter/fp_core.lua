@@ -432,11 +432,39 @@ local function splitLines(text)
   return out
 end
 
+-- v(0 <= t <= 3) = t  ->  v(t) = t, 0 <= t <= 3: a range written inside the brackets of the name.
+-- Each such formula becomes a line of its own (a piece), keeping the other parts of its line.
+local function liftRangesFromNames(text)
+  local out = {}
+  for _, line in ipairs(splitLines(text)) do
+    local rest, lifted = {}, {}
+    for _, part in ipairs(splitParts(line)) do
+      local name, inner, rhs = part:match("^%s*([%a_][%w_]*)%s*(%b())%s*=(.*)$")
+      local cond = inner and trim(inner:sub(2, -2))
+      local var = cond and isCondition(cond) and not rhs:find("^=") and parseCondition(cond)
+      if var then
+        lifted[#lifted + 1] = name .. "(" .. var .. ") = " .. rhs .. ", " .. cond
+      else
+        rest[#rest + 1] = part
+      end
+    end
+    if #lifted == 0 then
+      out[#out + 1] = line
+    elseif #lifted == 1 then
+      out[#out + 1] = table.concat({ lifted[1], table.unpack(rest) }, ", ")
+    else
+      for _, l in ipairs(lifted) do out[#out + 1] = l end
+      if #rest > 0 then out[#out + 1] = table.concat(rest, ", ") end
+    end
+  end
+  return table.concat(out, "\n")
+end
+
 function M.parseFormula(text)
   if type(text) ~= "string" or trim(text) == "" then
     return nil, "There's no formula. Write something like  y = 100 - t^2, 0 <= t <= 64"
   end
-  text = M.normalize(text)
+  text = liftRangesFromNames(M.normalize(text))
 
   -- Piecewise: several lines that each have a formula and their own range, e.g.
   --   0 <= t <= 0.6, v(t) = 3t

@@ -670,7 +670,12 @@ function parseOne(text)
     depName = depName or f.name
     curves[#curves + 1] = { exprX = var, exprY = f.expr, name = f.name }
   end
-  if not depName or (#formulas > 1 and depName:match("^f")) then
+  -- several functions with different names (v and x) share the vertical axis: call it y
+  local differentNames = false
+  for _, f in ipairs(formulas) do
+    if f.name and f.name ~= depName then differentNames = true end
+  end
+  if not depName or (#formulas > 1 and (depName:match("^f") or differentNames)) then
     depName = (var == "y") and "f" or "y"
   end
   -- conditions on the result (y > 0) cut the curve; "y" always means the vertical value

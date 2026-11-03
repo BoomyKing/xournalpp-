@@ -94,6 +94,10 @@ CHANGES FROM THE ORIGINAL (github.com/xournalpp/xournalpp/pull/3811)
 - Graph placed on the current page and selected; settings remembered; cm/mm units;
   fixed GTK warnings and a checkbox that greyed out the wrong field.
 
+NEW IN 2.11
+- Where a graph crosses the axes is a key value too: its zeros (v = 0 at t = 3.857) and its
+  value at 0. Graphs with more than 4 zeros (sin x over a long range) get none.
+
 NEW IN 2.10
 - Maximums and minimums inside the range (the top of h(t) = 20t - 5t^2 at t = 2) are key values
   too. Graphs with more than 4 of them (sin(10x)) get none, to keep the axes readable.

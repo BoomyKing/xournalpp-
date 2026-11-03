@@ -1408,6 +1408,42 @@ function M.build(cfg)
         end
       end
     end
+    -- where each graph crosses the axes: its zeros (v = 0 where the motion turns around) and its value at 0
+    for i, c in ipairs(curveDefs) do
+      if c.exprX == var then
+        local f = funcs[i][2]
+        local lo, hi = ranges[i][1], ranges[i][2]
+        local zeros = {}
+        local N = 400
+        local prevT, prevV
+        for k = 0, N do
+          local t = lo + (hi - lo) * k / N
+          local v = f(t)
+          if v == 0 then
+            zeros[#zeros + 1] = t
+            v = nil -- don't count it again with the next sample
+          elseif v and prevV and (prevV < 0) ~= (v < 0) then
+            local t0, t1, v0 = prevT, t, prevV
+            for _ = 1, 60 do
+              local m = (t0 + t1) / 2
+              local vm = f(m)
+              if not vm then break end
+              if vm == 0 then t0, t1 = m, m break end
+              if (vm < 0) == (v0 < 0) then t0, v0 = m, vm else t1 = m end
+            end
+            local tz = (t0 + t1) / 2
+            local vz = f(tz)
+            -- a real zero, not a jump across a pole (1/x)
+            if vz and abs(vz) <= 1e-6 * (1 + abs(prevV) + abs(v)) then zeros[#zeros + 1] = tz end
+          end
+          prevT, prevV = t, v
+        end
+        if #zeros <= 4 then
+          for _, t in ipairs(zeros) do addKey(t, 0) end
+        end
+        if lo < 0 and hi > 0 then addKey(0, f(0)) end
+      end
+    end
     -- crossings of graphs of the same variable (not of pieces of one function)
     for i = 1, #curveDefs do
       for j = i + 1, #curveDefs do

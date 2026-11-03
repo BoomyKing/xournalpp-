@@ -1361,6 +1361,53 @@ function M.build(cfg)
         if t then addKey(funcs[i][1](t), funcs[i][2](t)) end
       end
     end
+    -- maximums and minimums inside each graph's range (the top of 20t - t^2 at t = 10)
+    for i, c in ipairs(curveDefs) do
+      if c.exprX == var then
+        local f = funcs[i][2]
+        local lo, hi = ranges[i][1], ranges[i][2]
+        local N = 400
+        local ts, ys = {}, {}
+        for k = 0, N do
+          ts[k] = lo + (hi - lo) * k / N
+          ys[k] = f(ts[k])
+        end
+        local yMinS, yMaxS = huge, -huge
+        for k = 0, N do
+          if ys[k] then yMinS, yMaxS = math.min(yMinS, ys[k]), math.max(yMaxS, ys[k]) end
+        end
+        local tol = 1e-9 * math.max(1, abs(yMinS), abs(yMaxS))
+        local extremes = {}
+        for k = 1, N - 1 do
+          local a, b, d = ys[k - 1], ys[k], ys[k + 1]
+          if a and b and d then
+            local isMax = b > a + tol and b >= d + tol
+            local isMin = b < a - tol and b <= d - tol
+            if isMax or isMin then
+              -- golden-section search between the neighbouring samples
+              local x0, x1 = ts[k - 1], ts[k + 1]
+              local g = (math.sqrt(5) - 1) / 2
+              local function better(u, v) -- is f(u) more extreme than f(v)?
+                local fu, fv = f(u), f(v)
+                if not (fu and fv) then return false end
+                if isMax then return fu > fv else return fu < fv end
+              end
+              local m1, m2 = x1 - g * (x1 - x0), x0 + g * (x1 - x0)
+              for _ = 1, 80 do
+                if better(m1, m2) then x1 = m2 else x0 = m1 end
+                m1, m2 = x1 - g * (x1 - x0), x0 + g * (x1 - x0)
+              end
+              local tm = (x0 + x1) / 2
+              if f(tm) then extremes[#extremes + 1] = tm end
+            end
+          end
+        end
+        -- a wiggly graph (sin(10x)) would get a key value at every bump: then mark none
+        if #extremes <= 4 then
+          for _, t in ipairs(extremes) do addKey(funcs[i][1](t), f(t)) end
+        end
+      end
+    end
     -- crossings of graphs of the same variable (not of pieces of one function)
     for i = 1, #curveDefs do
       for j = i + 1, #curveDefs do

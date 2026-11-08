@@ -50,6 +50,10 @@ Only formulas named x and y make a parametric curve; any other names are separat
    0.6 <= t <= 2, v(t) = 1.8           pieces with the same name are one function in one colour)
    0 <= t <= 3, v(t) = t, x(t) = 0.5t^2          (several functions per piece:
    3 <= t <= 5, v(t) = 3 - 3.5(t - 3), x(t) = ...   v and x each get their own colour)
+   y = 2^x, -5 <= x <= 5, steps on x = 1
+                                      (only at every step: dots joined by straight lines;
+                                       also  step = 0.5  or  Δx = 2. In a piecewise function,
+                                       on a piece's line it's for that piece only)
    v(0 <= t <= 3) = t                 (or with the range inside the brackets)
    v(3 <= t <= 5) = 3 - 3.5(t - 3)
    y = -x if x <= 0                   ("if" works too; a line with only a condition
@@ -97,6 +101,10 @@ CHANGES FROM THE ORIGINAL (github.com/xournalpp/xournalpp/pull/3811)
 - Replaced the luaxp parser with a small, sandboxed one with clear error messages.
 - Graph placed on the current page and selected; settings remembered; cm/mm units;
   fixed GTK warnings and a checkbox that greyed out the wrong field.
+
+NEW IN 2.14
+- Steps: "steps on x = 1" draws the graph only at x = -5, -4, ..., 5, as dots joined by
+  straight lines.
 
 NEW IN 2.13
 - Several functions with different names (v and x) share an axis named y.

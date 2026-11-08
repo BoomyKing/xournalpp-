@@ -313,6 +313,19 @@ end
 
 local function isVarName(p) return M.validVariable(p) end
 
+-- "steps on x = 1", "step x = 0.5", "step = 2", "steps 1", "Δx = 1": draw the graph only at every step of the
+-- variable, as dots joined by straight lines. Returns the text of the step size and the variable (or nil), or
+-- nil when the part isn't about steps.
+local function stepParts(part)
+  part = trim(part)
+  local v, size = part:match("^[Ss]teps?%s+on%s+([%a_][%w_]*)%s*[=:]?%s*(.+)$")
+  if not v then v, size = part:match("^[Ss]teps?%s+([%a_][%w_]*)%s*[=:]%s*(.+)$") end
+  if not v then v, size = part:match("^\u{0394}%s*([%a_][%w_]*)%s*=%s*(.+)$") end
+  if not v then size = part:match("^[Ss]teps?%s*[=:]?%s*([^%a].*)$") end
+  return size, v
+end
+local function isStep(part) return stepParts(part) ~= nil end
+
 -- One condition, e.g. "0 <= t <= 64", "64 >= t >= 0", "y > 0", "x <= 3", "2 < x", "t in [0, 64]".
 -- Returns name, lo, hi (lo or hi may be nil) or nil, error.
 local function parseCondition(part)
@@ -475,7 +488,7 @@ function M.parseFormula(text)
   for _, line in ipairs(splitLines(text)) do
     local hasFormula, hasCond = false, false
     for _, part in ipairs(splitParts(line)) do
-      if isCondition(part) then hasCond = true else hasFormula = true end
+      if isCondition(part) or isStep(part) then hasCond = true else hasFormula = true end
     end
     if hasFormula then
       formulaLines[#formulaLines + 1] = line
@@ -519,8 +532,16 @@ end
 function parseOne(text)
 
   local formulas, conds, condOrder = {}, {}, {}
+  local step, stepVar
   for _, part in ipairs(splitParts(text)) do
-    if isCondition(part) then
+    if isStep(part) then
+      local size, v = stepParts(part)
+      local value = M.constant(size)
+      if not (value and value > 0 and value < math.huge) then
+        return nil, "Couldn't read the step size in '" .. trim(part) .. "'. Write it like  steps on x = 1"
+      end
+      step, stepVar = value, v
+    elseif isCondition(part) then
       local name, lo, hi = parseCondition(part)
       if not name then return nil, lo end
       local c = conds[name]
@@ -609,7 +630,10 @@ function parseOne(text)
       local tMin, tMax = range(var)
       local xLo, xHi = clipOf(a.name)
       local yLo, yHi = clipOf(b.name)
-      return { curves = { { exprX = a.expr, exprY = b.expr } }, var = var, parametric = true,
+      if stepVar and stepVar ~= var then
+        return nil, string.format("The steps are on %s, but the curve's variable is %s.", stepVar, var)
+      end
+      return { curves = { { exprX = a.expr, exprY = b.expr, step = step } }, var = var, parametric = true,
         labelX = a.name, labelY = b.name, tMin = tMin, tMax = tMax,
         clip = { xMin = xLo, xMax = xHi, yMin = yLo, yMax = yHi } }
     end
@@ -695,6 +719,10 @@ function parseOne(text)
   if yLo and yHi and yLo >= yHi then
     return nil, "The conditions on " .. depName .. " leave nothing to draw."
   end
+  if stepVar and stepVar ~= var then
+    return nil, string.format("The steps are on %s, but the graph's variable is %s.", stepVar, var)
+  end
+  for _, c in ipairs(curves) do c.step = step end
   local tMin, tMax = range(var)
   return { curves = curves, var = var, parametric = false,
     labelX = var, labelY = depName, tMin = tMin, tMax = tMax,
@@ -971,6 +999,20 @@ end
 -- Sampling and clipping
 ---------------------------------------------------------------------------
 
+--- Evaluates the curve only at lo, lo + step, lo + 2 step, ... up to hi. Same results as M.sample.
+function M.sampleSteps(fx, fy, lo, hi, step)
+  local pts, used = {}, {}
+  local n = floor((hi - lo) / step + 1e-9)
+  for k = 0, n do
+    local t = lo + k * step
+    if abs(t) < step * 1e-9 then t = 0.0 end -- -5 + 5 * 1 can come out as 1e-16
+    local x, y = fx(t), fy(t)
+    if x and y then pts[#pts + 1] = { x, y } else pts[#pts + 1] = false end
+    used[#used + 1] = t
+  end
+  return pts, used
+end
+
 --- Evaluates the curve. Returns a list where each entry is {x, y} or false (undefined),
 --- and the list of parameter values they belong to.
 function M.sample(fx, fy, tMin, tMax, samples)
@@ -1079,6 +1121,7 @@ local MAX_DOTS = 2000    -- whole numbers checked at most
 local MAX_LINES = 60     -- more ticks/grid lines than this per axis gets a coarser step
 local MIN_TICKS = 4      -- fewer ticks than this per axis gets a finer step
 local MAX_KEY_POINTS = 10 -- key values marked at most
+local MAX_STEPS = 2000   -- points of a graph drawn in steps
 
 -- Picks the tick step for one axis. Returns step, wasAdjusted.
 -- smallest 1/2/5 x 10^k that is >= v
@@ -1178,14 +1221,24 @@ function M.build(cfg)
   local sampled, sampledTs = {}, {}
   for i, f in ipairs(funcs) do
     local tMin, tMax = ranges[i][1], ranges[i][2]
-    local pts, ts = M.sample(f[1], f[2], tMin, tMax, cfg.samples or 300)
+    local step = curveDefs[i].step
+    if step and (tMax - tMin) / step > MAX_STEPS then
+      return nil, string.format("Steps of %s from %s to %s are too many to draw (at most %d).",
+        M.formatKey(step), M.formatKey(tMin), M.formatKey(tMax), MAX_STEPS)
+    end
+    local pts, ts
+    if step then
+      pts, ts = M.sampleSteps(f[1], f[2], tMin, tMax, step)
+    else
+      pts, ts = M.sample(f[1], f[2], tMin, tMax, cfg.samples or 300)
+    end
     -- When the curve only exists on a small part of the range (sqrt(x) for -50 <= x <= 3), most samples are
     -- wasted and the curve looks angular: sample that part again, as finely as the whole range.
     local first, last
     for j = 1, #pts do
       if pts[j] then first = first or j; last = j end
     end
-    if first and ts[last] - ts[first] < 0.5 * (tMax - tMin) then
+    if not step and first and ts[last] - ts[first] < 0.5 * (tMax - tMin) then
       local a, b = ts[math.max(first - 1, 1)], ts[math.min(last + 1, #ts)]
       if b > a then pts, ts = M.sample(f[1], f[2], a, b, cfg.samples or 300) end
     end
@@ -1218,7 +1271,16 @@ function M.build(cfg)
       if t == floor(t) then indexOf[t] = j end
     end
     local isolated = {} -- points the sampling already drew as tiny dots; drawn as proper dots instead
-    if tMax - tMin <= MAX_DOTS then
+    if curveDefs[i].step then
+      -- a graph in steps: a dot at every step, joined by the straight lines already sampled
+      for _, p in ipairs(pts) do
+        if p and inside(p[1], p[2], region) then
+          dots[i][#dots[i] + 1] = { p[1], p[2] }
+          isolated[#isolated + 1] = p
+          anyDefined = true
+        end
+      end
+    elseif tMax - tMin <= MAX_DOTS then
       for k = ceil(tMin), floor(tMax) do
         local x, y = f[1](k + 0.0), f[2](k + 0.0)
         if x and y and inside(x, y, region) then
@@ -1395,8 +1457,9 @@ function M.build(cfg)
       end
     end
     -- maximums and minimums inside each graph's range (the top of 20t - t^2 at t = 10)
+    -- (not for graphs in steps: their highest point is one of the steps, between them is only a straight line)
     for i, c in ipairs(curveDefs) do
-      if c.exprX == var then
+      if c.exprX == var and not c.step then
         local f = funcs[i][2]
         local lo, hi = ranges[i][1], ranges[i][2]
         local N = 400
@@ -1443,7 +1506,7 @@ function M.build(cfg)
     end
     -- where each graph crosses the axes: its zeros (v = 0 where the motion turns around) and its value at 0
     for i, c in ipairs(curveDefs) do
-      if c.exprX == var then
+      if c.exprX == var and not c.step then
         local f = funcs[i][2]
         local lo, hi = ranges[i][1], ranges[i][2]
         local zeros = {}
@@ -1481,7 +1544,8 @@ function M.build(cfg)
     for i = 1, #curveDefs do
       for j = i + 1, #curveDefs do
         local fi, fj = funcs[i][2], funcs[j][2]
-        if groupOf[i] ~= groupOf[j] and curveDefs[i].exprX == var and curveDefs[j].exprX == var then
+        if groupOf[i] ~= groupOf[j] and curveDefs[i].exprX == var and curveDefs[j].exprX == var
+            and not curveDefs[i].step and not curveDefs[j].step then
           local lo, hi = math.max(ranges[i][1], ranges[j][1]), math.min(ranges[i][2], ranges[j][2])
           local found = {}
           local function diff(t)

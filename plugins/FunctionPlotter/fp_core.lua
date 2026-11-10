@@ -260,10 +260,34 @@ local REPLACEMENTS = {
   { "²", "^2" }, { "³", "^3" }, { "π", "pi" }, { "≤", "<=" }, { "≥", ">=" }, { "⩽", "<=" }, { "⩾", ">=" },
   { "∈", " in " }, { "\u{00A0}", " " },
 }
+-- Greek letters that can be variables or function names (ω, θ, α ...). π stays the constant pi, and Δ is
+-- kept for steps (Δx = 1). Inside the plugin each becomes a plain name, _g<code point> (ω -> _g969), and
+-- M.display turns it back into the letter for axis names and messages.
+M.GREEK = {
+  alpha = 945, beta = 946, gamma = 947, delta = 948, epsilon = 949, varepsilon = 949, zeta = 950, eta = 951,
+  theta = 952, vartheta = 977, iota = 953, kappa = 954, lambda = 955, mu = 956, nu = 957, xi = 958,
+  rho = 961, varrho = 1009, sigma = 963, varsigma = 962, tau = 964, upsilon = 965, phi = 966, varphi = 981,
+  chi = 967, psi = 968, omega = 969,
+  Gamma = 915, Theta = 920, Lambda = 923, Xi = 926, Sigma = 931, Phi = 934, Psi = 936, Omega = 937,
+}
+local GREEK_CHARS = {}
+for _, cp in pairs(M.GREEK) do GREEK_CHARS[utf8.char(cp)] = cp end
+
+--- "_g969" -> "ω": names inside the plugin back to the letters the user wrote.
+function M.display(s)
+  if type(s) ~= "string" then return s end
+  return (s:gsub("_g(%d+)", function(cp) return utf8.char(tonumber(cp)) end))
+end
+
 function M.normalize(text)
   for _, r in ipairs(REPLACEMENTS) do
     text = text:gsub(r[1], r[2])
   end
+  -- (spaces around it, so 0.92ω and ωt are read as multiplications)
+  text = text:gsub(utf8.charpattern, function(ch)
+    local cp = GREEK_CHARS[ch]
+    return cp and (" _g" .. cp .. " ") or ch
+  end)
   text = text:gsub("√(%b())", "sqrt%1")
   text = text:gsub("√%s*([%w%.]+)", "sqrt(%1)")
   return text
@@ -473,7 +497,18 @@ local function liftRangesFromNames(text)
   return table.concat(out, "\n")
 end
 
+local parseFormulaRaw
+
+--- Reads a formula. Returns the parsed formula, or nil and an error message.
 function M.parseFormula(text)
+  local result, err = parseFormulaRaw(text)
+  if not result then return nil, M.display(err) end
+  result.labelX, result.labelY = M.display(result.labelX), M.display(result.labelY)
+  for _, c in ipairs(result.curves) do c.name = M.display(c.name) end
+  return result
+end
+
+function parseFormulaRaw(text)
   if type(text) ~= "string" or trim(text) == "" then
     return nil, "There's no formula. Write something like  y = 100 - t^2, 0 <= t <= 64"
   end
@@ -678,7 +713,7 @@ function parseOne(text)
   if not M.validVariable(var) then
     return nil, "'" .. var .. "' can't be used as a variable name."
   end
-  if not var:match("^%a[%d_]*$") then
+  if not (var:match("^%a[%d_]*$") or var:match("^_g%d+$")) then
     return nil, "'" .. var .. "' isn't a formula variable. Use a single letter like t or x."
   end
   local curves, depName = {}, nil
@@ -752,6 +787,7 @@ local TEX_SYMBOLS = {
   ["{"] = " { ", ["}"] = " } ", ["%"] = "%", cdots = "", ldots = "", mid = " , ",
   colon = ":", land = ",", wedge = ",", text = "", mathrm = "", mathit = "", operatorname = "",
 }
+for name, cp in pairs(M.GREEK) do TEX_SYMBOLS[name] = utf8.char(cp) end
 local TEX_FUNCTIONS = {
   sin = true, cos = true, tan = true, arcsin = true, arccos = true, arctan = true, sinh = true, cosh = true,
   tanh = true, ln = true, log = true, exp = true, min = true, max = true, sqrt = true,
@@ -1169,7 +1205,16 @@ local function textWidth(text, size) return #text * size * 0.6 end
 ---   grid, gridColor, gridWidth, gridStyle
 ---   fontName, fontSize
 --- Returns result {strokes, texts, window, notes} or nil, error message.
+local buildRaw
+
+--- Builds the graph. Returns {strokes, texts, ...}, or nil and an error message.
 function M.build(cfg)
+  local result, err = buildRaw(cfg)
+  if not result then return nil, M.display(err) end
+  return result
+end
+
+function buildRaw(cfg)
   local curveDefs = cfg.curves or { { exprX = cfg.exprX, exprY = cfg.exprY } }
   local var = cfg.var
   -- Curves of the same group are pieces of one function (v(t) = 3t for 0 <= t <= 0.6, v(t) = 1.8 after that):

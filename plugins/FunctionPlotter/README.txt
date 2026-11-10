@@ -74,6 +74,8 @@ Write it the normal LaTeX way, e.g.
 and piecewise functions:  v(t) = \begin{cases} 3t & 0 \le t \le 0.6 \\ 1.8 & 0.6 \le t \le 2 \end{cases}
 (Reading the TeX formula goes through the clipboard, so after this the clipboard holds
 the copied formula.)
+Greek letters work as names and variables:  N(ω) = 2 - 0.92ω^2, ω >= 0, N >= 0  (axes ω and N;
+in TeX \omega, \theta, \alpha ...). π is always the number pi, and Δx = ... means steps.
 Symbols like −  ≤  ²  π  √ also work. 2t, 3(t+1) and 2πx (or 2pix) work without the *.
 |x| is the absolute value, same as abs(x); in TeX \left| \right|, \lvert \rvert work too.
 Functions: sin cos tan asin acos atan sinh cosh tanh sqrt root(v,n) abs exp
@@ -101,6 +103,9 @@ CHANGES FROM THE ORIGINAL (github.com/xournalpp/xournalpp/pull/3811)
 - Replaced the luaxp parser with a small, sandboxed one with clear error messages.
 - Graph placed on the current page and selected; settings remembered; cm/mm units;
   fixed GTK warnings and a checkbox that greyed out the wrong field.
+
+NEW IN 2.15
+- Greek letters (ω, θ, α ..., or \omega in TeX) can be variables and function names.
 
 NEW IN 2.14
 - Steps: "steps on x = 1" draws the graph only at x = -5, -4, ..., 5, as dots joined by

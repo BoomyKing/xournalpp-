@@ -499,12 +499,53 @@ end
 
 local parseFormulaRaw
 
+-- Splits "1, e, root(8, 3)" at the commas and semicolons that aren't inside brackets.
+local function splitList(text)
+  local items, depth, start = {}, 0, 1
+  for i = 1, #text do
+    local c = text:sub(i, i)
+    if c == "(" or c == "[" then depth = depth + 1
+    elseif c == ")" or c == "]" then depth = math.max(0, depth - 1)
+    elseif depth == 0 and (c == "," or c == ";") then
+      items[#items + 1] = text:sub(start, i - 1)
+      start = i + 1
+    end
+  end
+  items[#items + 1] = text:sub(start)
+  local out = {}
+  for _, item in ipairs(items) do if trim(item) ~= "" then out[#out + 1] = trim(item) end end
+  return out
+end
+
+-- Lines asking for a value table:  "table" (values chosen automatically), "table: 1, e, 1/e" or
+-- "table x = 1, e, 1/e" (these x values), "table y = 0, 1" (where the graph reaches these y values).
+-- Returns the text without them, and the table wanted (or nil).
+local function takeTableLines(text)
+  local wanted, kept = nil, {}
+  for line in (text .. "\n"):gmatch("(.-)\r?\n") do
+    local axis, rest = line:match("^%s*[Tt]able%s*([xXyY]?)%s*[:=]?%s*(.-)%s*$")
+    if axis and (axis == "" or rest ~= "" or line:match("^%s*[Tt]able%s*[xXyY]%s*$")) then
+      wanted = wanted or { x = {}, y = {} }
+      local list = axis:lower() == "y" and wanted.y or wanted.x
+      for _, item in ipairs(splitList(rest)) do list[#list + 1] = item end
+    else
+      kept[#kept + 1] = line
+    end
+  end
+  if wanted then wanted.auto = #wanted.x == 0 and #wanted.y == 0 end
+  return table.concat(kept, "\n"), wanted
+end
+M.takeTableLines = takeTableLines
+
 --- Reads a formula. Returns the parsed formula, or nil and an error message.
 function M.parseFormula(text)
+  local tableWanted
+  if type(text) == "string" then text, tableWanted = takeTableLines(text) end
   local result, err = parseFormulaRaw(text)
   if not result then return nil, M.display(err) end
   result.labelX, result.labelY = M.display(result.labelX), M.display(result.labelY)
   for _, c in ipairs(result.curves) do c.name = M.display(c.name) end
+  result.table = tableWanted
   return result
 end
 
@@ -1153,6 +1194,7 @@ end
 
 local ARROW = 8          -- arrow length in pt
 local DOT_RADIUS = 1.8   -- pt, for graphs that only exist at whole numbers
+local MARK_RADIUS = 2.4  -- pt, for the value table's points
 local MAX_DOTS = 2000    -- whole numbers checked at most
 local MAX_LINES = 60     -- more ticks/grid lines than this per axis gets a coarser step
 local MIN_TICKS = 4      -- fewer ticks than this per axis gets a finer step
@@ -1205,6 +1247,158 @@ local function textWidth(text, size) return #text * size * 0.6 end
 ---   grid, gridColor, gridWidth, gridStyle
 ---   fontName, fontSize
 --- Returns result {strokes, texts, window, notes} or nil, error message.
+-- Key values of the graphs: where a range written in the formula starts and ends, maximums and minimums, zeros,
+-- the value at 0, and where two graphs cross. accept(x, y) says whether a point is wanted. Returns a list of
+-- {x, y, t = the variable's value, curve = index}.
+local function keyPointsOf(funcs, curveDefs, ranges, groupOf, var, givenTMin, givenTMax, accept, maxPoints)
+  local keyPts = {}
+  local function addKey(x, y, t, i)
+    if not (finite(x) and finite(y)) or #keyPts >= maxPoints or not accept(x, y) then return end
+    for _, k in ipairs(keyPts) do
+      if abs(k[1] - x) <= 1e-9 * math.max(1, abs(x)) and abs(k[2] - y) <= 1e-9 * math.max(1, abs(y)) then
+        return
+      end
+    end
+    keyPts[#keyPts + 1] = { x, y, t = t, curve = i }
+  end
+  for i, c in ipairs(curveDefs) do
+    local lo, hi = c.tMin, c.tMax
+    if not (lo or hi) then lo, hi = givenTMin, givenTMax end
+    for _, t in ipairs({ lo or false, hi or false }) do
+      if t then addKey(funcs[i][1](t), funcs[i][2](t), t, i) end
+    end
+  end
+  -- maximums and minimums inside each graph's range (the top of 20t - t^2 at t = 10)
+  -- (not for graphs in steps: their highest point is one of the steps, between them is only a straight line)
+  for i, c in ipairs(curveDefs) do
+    if c.exprX == var and not c.step then
+      local f = funcs[i][2]
+      local lo, hi = ranges[i][1], ranges[i][2]
+      local N = 400
+      local ts, ys = {}, {}
+      for k = 0, N do
+        ts[k] = lo + (hi - lo) * k / N
+        ys[k] = f(ts[k])
+      end
+      local yMinS, yMaxS = huge, -huge
+      for k = 0, N do
+        if ys[k] then yMinS, yMaxS = math.min(yMinS, ys[k]), math.max(yMaxS, ys[k]) end
+      end
+      local tol = 1e-9 * math.max(1, abs(yMinS), abs(yMaxS))
+      local extremes = {}
+      for k = 1, N - 1 do
+        local a, b, d = ys[k - 1], ys[k], ys[k + 1]
+        if a and b and d then
+          local isMax = b > a + tol and b >= d + tol
+          local isMin = b < a - tol and b <= d - tol
+          if isMax or isMin then
+            -- golden-section search between the neighbouring samples
+            local x0, x1 = ts[k - 1], ts[k + 1]
+            local g = (math.sqrt(5) - 1) / 2
+            local function better(u, v) -- is f(u) more extreme than f(v)?
+              local fu, fv = f(u), f(v)
+              if not (fu and fv) then return false end
+              if isMax then return fu > fv else return fu < fv end
+            end
+            local m1, m2 = x1 - g * (x1 - x0), x0 + g * (x1 - x0)
+            for _ = 1, 80 do
+              if better(m1, m2) then x1 = m2 else x0 = m1 end
+              m1, m2 = x1 - g * (x1 - x0), x0 + g * (x1 - x0)
+            end
+            local tm = (x0 + x1) / 2
+            if f(tm) then extremes[#extremes + 1] = tm end
+          end
+        end
+      end
+      -- a wiggly graph (sin(10x)) would get a key value at every bump: then mark none
+      if #extremes <= 4 then
+        for _, t in ipairs(extremes) do addKey(funcs[i][1](t), f(t), t, i) end
+      end
+    end
+  end
+  -- where each graph crosses the axes: its zeros (v = 0 where the motion turns around) and its value at 0
+  for i, c in ipairs(curveDefs) do
+    if c.exprX == var and not c.step then
+      local f = funcs[i][2]
+      local lo, hi = ranges[i][1], ranges[i][2]
+      local zeros = {}
+      local N = 400
+      local prevT, prevV
+      for k = 0, N do
+        local t = lo + (hi - lo) * k / N
+        local v = f(t)
+        if v == 0 then
+          zeros[#zeros + 1] = t
+          v = nil -- don't count it again with the next sample
+        elseif v and prevV and (prevV < 0) ~= (v < 0) then
+          local t0, t1, v0 = prevT, t, prevV
+          for _ = 1, 60 do
+            local m = (t0 + t1) / 2
+            local vm = f(m)
+            if not vm then break end
+            if vm == 0 then t0, t1 = m, m break end
+            if (vm < 0) == (v0 < 0) then t0, v0 = m, vm else t1 = m end
+          end
+          local tz = (t0 + t1) / 2
+          local vz = f(tz)
+          -- a real zero, not a jump across a pole (1/x)
+          if vz and abs(vz) <= 1e-6 * (1 + abs(prevV) + abs(v)) then zeros[#zeros + 1] = tz end
+        end
+        prevT, prevV = t, v
+      end
+      if #zeros <= 4 then
+        for _, t in ipairs(zeros) do addKey(funcs[i][1](t), 0, t, i) end
+      end
+      if lo < 0 and hi > 0 then addKey(funcs[i][1](0), f(0), 0, i) end
+    end
+  end
+  -- crossings of graphs of the same variable (not of pieces of one function)
+  for i = 1, #curveDefs do
+    for j = i + 1, #curveDefs do
+      local fi, fj = funcs[i][2], funcs[j][2]
+      if groupOf[i] ~= groupOf[j] and curveDefs[i].exprX == var and curveDefs[j].exprX == var
+          and not curveDefs[i].step and not curveDefs[j].step then
+        local lo, hi = math.max(ranges[i][1], ranges[j][1]), math.min(ranges[i][2], ranges[j][2])
+        local found = {}
+        local function diff(t)
+          local a, b = fi(t), fj(t)
+          return a and b and a - b
+        end
+        if lo < hi then
+          local N = 400
+          local prevT, prevD
+          for k = 0, N do
+            local t = lo + (hi - lo) * k / N
+            local d = diff(t)
+            if d == 0 then
+              found[#found + 1] = t
+              d = nil -- don't count it again with the next sample
+            elseif d and prevD and (prevD < 0) ~= (d < 0) then
+              local t0, t1, d0 = prevT, t, prevD
+              for _ = 1, 60 do
+                local m = (t0 + t1) / 2
+                local dm = diff(m)
+                if not dm then break end
+                if dm == 0 then t0, t1 = m, m break end
+                if (dm < 0) == (d0 < 0) then t0, d0 = m, dm else t1 = m end
+              end
+              local tc = (t0 + t1) / 2
+              local a, dc = fi(tc), diff(tc)
+              -- a real crossing, not a jump across a pole (1/x)
+              if a and dc and abs(dc) <= 1e-6 * (1 + abs(a)) then found[#found + 1] = tc end
+            end
+            prevT, prevD = t, d
+          end
+        end
+        if #found <= 4 then
+          for _, t in ipairs(found) do addKey(funcs[i][1](t), fi(t), t, i) end
+        end
+      end
+    end
+  end
+  return keyPts
+end
+
 local buildRaw
 
 --- Builds the graph. Returns {strokes, texts, ...}, or nil and an error message.
@@ -1485,150 +1679,8 @@ function buildRaw(cfg)
   -- and where two graphs cross. They get their numbers on the axes and dashed guide lines.
   local keyPts = {}
   if cfg.axes and cfg.numbers and cfg.keyValues ~= false then
-    local spanX, spanY = w.xMax - w.xMin, w.yMax - w.yMin
-    local function addKey(x, y)
-      if not (finite(x) and finite(y)) or #keyPts >= MAX_KEY_POINTS then return end
-      if x < w.xMin or x > w.xMax or y < w.yMin or y > w.yMax then return end
-      for _, k in ipairs(keyPts) do
-        if abs(k[1] - x) <= 1e-9 * spanX and abs(k[2] - y) <= 1e-9 * spanY then return end
-      end
-      keyPts[#keyPts + 1] = { x, y }
-    end
-    for i, c in ipairs(curveDefs) do
-      local lo, hi = c.tMin, c.tMax
-      if not (lo or hi) then lo, hi = cfg.givenTMin, cfg.givenTMax end
-      for _, t in ipairs({ lo or false, hi or false }) do
-        if t then addKey(funcs[i][1](t), funcs[i][2](t)) end
-      end
-    end
-    -- maximums and minimums inside each graph's range (the top of 20t - t^2 at t = 10)
-    -- (not for graphs in steps: their highest point is one of the steps, between them is only a straight line)
-    for i, c in ipairs(curveDefs) do
-      if c.exprX == var and not c.step then
-        local f = funcs[i][2]
-        local lo, hi = ranges[i][1], ranges[i][2]
-        local N = 400
-        local ts, ys = {}, {}
-        for k = 0, N do
-          ts[k] = lo + (hi - lo) * k / N
-          ys[k] = f(ts[k])
-        end
-        local yMinS, yMaxS = huge, -huge
-        for k = 0, N do
-          if ys[k] then yMinS, yMaxS = math.min(yMinS, ys[k]), math.max(yMaxS, ys[k]) end
-        end
-        local tol = 1e-9 * math.max(1, abs(yMinS), abs(yMaxS))
-        local extremes = {}
-        for k = 1, N - 1 do
-          local a, b, d = ys[k - 1], ys[k], ys[k + 1]
-          if a and b and d then
-            local isMax = b > a + tol and b >= d + tol
-            local isMin = b < a - tol and b <= d - tol
-            if isMax or isMin then
-              -- golden-section search between the neighbouring samples
-              local x0, x1 = ts[k - 1], ts[k + 1]
-              local g = (math.sqrt(5) - 1) / 2
-              local function better(u, v) -- is f(u) more extreme than f(v)?
-                local fu, fv = f(u), f(v)
-                if not (fu and fv) then return false end
-                if isMax then return fu > fv else return fu < fv end
-              end
-              local m1, m2 = x1 - g * (x1 - x0), x0 + g * (x1 - x0)
-              for _ = 1, 80 do
-                if better(m1, m2) then x1 = m2 else x0 = m1 end
-                m1, m2 = x1 - g * (x1 - x0), x0 + g * (x1 - x0)
-              end
-              local tm = (x0 + x1) / 2
-              if f(tm) then extremes[#extremes + 1] = tm end
-            end
-          end
-        end
-        -- a wiggly graph (sin(10x)) would get a key value at every bump: then mark none
-        if #extremes <= 4 then
-          for _, t in ipairs(extremes) do addKey(funcs[i][1](t), f(t)) end
-        end
-      end
-    end
-    -- where each graph crosses the axes: its zeros (v = 0 where the motion turns around) and its value at 0
-    for i, c in ipairs(curveDefs) do
-      if c.exprX == var and not c.step then
-        local f = funcs[i][2]
-        local lo, hi = ranges[i][1], ranges[i][2]
-        local zeros = {}
-        local N = 400
-        local prevT, prevV
-        for k = 0, N do
-          local t = lo + (hi - lo) * k / N
-          local v = f(t)
-          if v == 0 then
-            zeros[#zeros + 1] = t
-            v = nil -- don't count it again with the next sample
-          elseif v and prevV and (prevV < 0) ~= (v < 0) then
-            local t0, t1, v0 = prevT, t, prevV
-            for _ = 1, 60 do
-              local m = (t0 + t1) / 2
-              local vm = f(m)
-              if not vm then break end
-              if vm == 0 then t0, t1 = m, m break end
-              if (vm < 0) == (v0 < 0) then t0, v0 = m, vm else t1 = m end
-            end
-            local tz = (t0 + t1) / 2
-            local vz = f(tz)
-            -- a real zero, not a jump across a pole (1/x)
-            if vz and abs(vz) <= 1e-6 * (1 + abs(prevV) + abs(v)) then zeros[#zeros + 1] = tz end
-          end
-          prevT, prevV = t, v
-        end
-        if #zeros <= 4 then
-          for _, t in ipairs(zeros) do addKey(t, 0) end
-        end
-        if lo < 0 and hi > 0 then addKey(0, f(0)) end
-      end
-    end
-    -- crossings of graphs of the same variable (not of pieces of one function)
-    for i = 1, #curveDefs do
-      for j = i + 1, #curveDefs do
-        local fi, fj = funcs[i][2], funcs[j][2]
-        if groupOf[i] ~= groupOf[j] and curveDefs[i].exprX == var and curveDefs[j].exprX == var
-            and not curveDefs[i].step and not curveDefs[j].step then
-          local lo, hi = math.max(ranges[i][1], ranges[j][1]), math.min(ranges[i][2], ranges[j][2])
-          local found = {}
-          local function diff(t)
-            local a, b = fi(t), fj(t)
-            return a and b and a - b
-          end
-          if lo < hi then
-            local N = 400
-            local prevT, prevD
-            for k = 0, N do
-              local t = lo + (hi - lo) * k / N
-              local d = diff(t)
-              if d == 0 then
-                found[#found + 1] = t
-                d = nil -- don't count it again with the next sample
-              elseif d and prevD and (prevD < 0) ~= (d < 0) then
-                local t0, t1, d0 = prevT, t, prevD
-                for _ = 1, 60 do
-                  local m = (t0 + t1) / 2
-                  local dm = diff(m)
-                  if not dm then break end
-                  if dm == 0 then t0, t1 = m, m break end
-                  if (dm < 0) == (d0 < 0) then t0, d0 = m, dm else t1 = m end
-                end
-                local tc = (t0 + t1) / 2
-                local a, dc = fi(tc), diff(tc)
-                -- a real crossing, not a jump across a pole (1/x)
-                if a and dc and abs(dc) <= 1e-6 * (1 + abs(a)) then found[#found + 1] = tc end
-              end
-              prevT, prevD = t, d
-            end
-          end
-          if #found <= 4 then
-            for _, t in ipairs(found) do addKey(funcs[i][1](t), fi(t)) end
-          end
-        end
-      end
-    end
+    keyPts = keyPointsOf(funcs, curveDefs, ranges, groupOf, var, cfg.givenTMin, cfg.givenTMax,
+      function(x, y) return x >= w.xMin and x <= w.xMax and y >= w.yMin and y <= w.yMax end, MAX_KEY_POINTS)
     -- dashed guide lines from each key point to the axes, and tick marks
     for _, k in ipairs(keyPts) do
       local px, py = X(k[1]), Y(k[2])
@@ -1654,6 +1706,7 @@ function buildRaw(cfg)
   -- Several curves: each gets its own colour so they can be told apart.
   local PALETTE = { 0x1a5fb4, 0xc01c28, 0x26a269, 0xe66100, 0x613583, 0x865e3c }
   local curves = 0
+  local marked = {} -- value table points already drawn (pieces of one function share their ends)
   local curveEnds = {} -- where each group's curve ends on the page (its piece reaching furthest), for its name
   local endT = {}
   for i, lines in ipairs(pieces) do
@@ -1672,14 +1725,28 @@ function buildRaw(cfg)
       strokes[#strokes + 1] = s
       curves = curves + 1
     end
+    -- the value table's points (cfg.markT: values of the variable), as bigger dots
+    for _, t in ipairs(cfg.markT or {}) do
+      local lo, hi = ranges[i][1], ranges[i][2]
+      local tol = 1e-9 * math.max(1, abs(lo), abs(hi))
+      if t >= lo - tol and t <= hi + tol then
+        local x, y = funcs[i][1](t), funcs[i][2](t)
+        local key = x and y and (groupOf[i] .. ":" .. x .. "," .. y)
+        if key and not marked[key] and inside(x, y, w) then
+          marked[key] = true
+          dots[i][#dots[i] + 1] = { x, y, big = true }
+        end
+      end
+    end
     -- isolated points: small filled circles in the curve's colour
     for _, p in ipairs(dots[i]) do
       if inside(p[1], p[2], w) then
         local cx, cy = X(p[1]), Y(p[2])
         local xs, ys = {}, {}
+        local r = p.big and MARK_RADIUS or DOT_RADIUS
         for j = 0, 12 do
           local a = 2 * math.pi * j / 12
-          xs[#xs + 1], ys[#ys + 1] = cx + DOT_RADIUS * math.cos(a), cy + DOT_RADIUS * math.sin(a)
+          xs[#xs + 1], ys[#ys + 1] = cx + r * math.cos(a), cy + r * math.sin(a)
         end
         local s = { x = xs, y = ys, tool = "pen", fill = 255, width = 0.5 }
         if cfg.curveColor then s.color = cfg.curveColor end
@@ -1818,6 +1885,321 @@ function buildRaw(cfg)
 
   return { strokes = strokes, texts = texts, window = w, notes = notes,
     xStep = xStep, yStep = yStep }
+end
+
+
+---------------------------------------------------------------------------
+-- Value tables
+---------------------------------------------------------------------------
+
+local MAX_TABLE_COLUMNS = 6 -- columns chosen automatically
+local MAX_KEY_COLUMNS = 4   -- of which at most this many key values (zeros, highest points ...)
+
+--- A number for a table cell: whole numbers as they are, others with 2 decimals (0.69), very small or large
+--- ones with 4 significant digits.
+function M.formatTableValue(v)
+  if v == nil or not finite(v) then return "–" end
+  if abs(v - math.floor(v + 0.5)) <= 1e-9 * math.max(1, abs(v)) and abs(v) < 1e15 then
+    local s = string.format("%d", math.floor(v + 0.5))
+    return s == "-0" and "0" or s
+  end
+  if abs(v) >= 0.01 and abs(v) < 1e6 then
+    local s = string.format("%.2f", v):gsub("0+$", ""):gsub("%.$", "")
+    if s ~= "0" and s ~= "-0" then return s end
+  end
+  return M.formatKey(v)
+end
+
+-- Labels for multiples of pi: 1/2 -> "π/2", 3/2 -> "3π/2", -1 -> "-π"
+local function piLabel(num, den)
+  local function gcd(a, b) while b ~= 0 do a, b = b, a % b end return a end
+  local g = gcd(abs(num), den)
+  num, den = num // g, den // g
+  if num == 0 then return "0" end
+  local sign = num < 0 and "-" or ""
+  local n = abs(num)
+  local s = sign .. (n == 1 and "" or tostring(n)) .. "π"
+  if den ~= 1 then s = s .. "/" .. den end
+  return s
+end
+
+local SUPERSCRIPT = { ["2"] = "²", ["3"] = "³" }
+
+-- x values that make good table columns for these formulas, with how they should be written:
+-- whole numbers, halves on short ranges, multiples of π for trigonometry, powers of e for ln and exp,
+-- powers of 10 for log.
+local function tableCandidates(lo, hi, exprText)
+  local list = {}
+  local function add(t, label, nice)
+    if t >= lo - 1e-12 and t <= hi + 1e-12 then list[#list + 1] = { t = t, label = label, nice = nice } end
+  end
+  local span = hi - lo
+  local step = span <= 30 and 1 or M.niceStep(span / 10)
+  for k = math.ceil(lo / step), math.floor(hi / step) do
+    add(k * step, M.formatTableValue(k * step), 1)
+  end
+  if span <= 6 then
+    for k = math.ceil(lo - 0.5), math.floor(hi - 0.5) do add(k + 0.5, M.formatTableValue(k + 0.5), 0.5) end
+  end
+  if exprText:find("sin") or exprText:find("cos") or exprText:find("tan") then
+    for _, den in ipairs({ 2, 3, 4, 6 }) do
+      for num = math.ceil(lo * den / math.pi - 1e-9), math.floor(hi * den / math.pi + 1e-9) do
+        if num % den ~= 0 or abs(num) <= 2 * den then add(num * math.pi / den, piLabel(num, den), 1) end
+      end
+    end
+  end
+  if exprText:find("ln") or exprText:find("exp") or exprText:find("%f[%w_]e%f[^%w_]") then
+    for k = -3, 3 do
+      local label = k == 0 and "1" or k == 1 and "e" or k == -1 and "1/e"
+        or (k > 0 and ("e" .. SUPERSCRIPT[tostring(k)]) or ("1/e" .. SUPERSCRIPT[tostring(-k)]))
+      add(math.exp(k), label, 1)
+    end
+  end
+  if exprText:find("log%(") or exprText:find("log%s") then
+    for k = -2, 3 do add(10.0 ^ k, M.formatTableValue(10.0 ^ k), 1) end
+  end
+  if exprText:find("log2") then
+    for k = -2, 6 do add(2.0 ^ k, M.formatTableValue(2.0 ^ k), 1) end
+  end
+  return list
+end
+
+-- How "nice" a value is to read in a table: whole numbers best, then one decimal.
+local function niceness(v)
+  if not v then return -1 end
+  if abs(v) > 1000 then return 0 end
+  if abs(v - math.floor(v + 0.5)) < 1e-9 then return 3 end
+  if abs(v * 10 - math.floor(v * 10 + 0.5)) < 1e-8 then return 2 end
+  return 0
+end
+
+-- The curves of a configuration, compiled: funcs[i] = {fx, fy}, their ranges and groups (pieces of one function
+-- share a group).
+local function prepareCurves(cfg)
+  local curveDefs = cfg.curves
+  local funcs, ranges, groupOf, groups = {}, {}, {}, {}
+  local seen = {}
+  for i, c in ipairs(curveDefs) do
+    local fx, errX = M.compile(c.exprX, cfg.var)
+    if not fx then return nil, errX end
+    local fy, errY = M.compile(c.exprY, cfg.var)
+    if not fy then return nil, errY end
+    funcs[i] = { fx, fy }
+    local lo, hi = cfg.tMin, cfg.tMax
+    if c.tMin or c.tMax then lo, hi = M.resolveRange(c, cfg.tMin, cfg.tMax) end
+    ranges[i] = { lo, hi }
+    local key = c.group or i
+    if not seen[key] then
+      groups[#groups + 1] = { name = c.name, curves = {}, parametric = c.exprX ~= cfg.var }
+      seen[key] = #groups
+    end
+    groupOf[i] = seen[key]
+    local g = groups[seen[key]].curves
+    g[#g + 1] = i
+  end
+  return funcs, ranges, groupOf, groups
+end
+
+-- A group's point at t: the first of its pieces whose range holds t and that is defined there.
+local function groupPoint(group, t, funcs, ranges)
+  for _, i in ipairs(group.curves) do
+    local lo, hi = ranges[i][1], ranges[i][2]
+    local tol = 1e-9 * math.max(1, abs(lo), abs(hi))
+    if t >= lo - tol and t <= hi + tol then
+      local x, y = funcs[i][1](t), funcs[i][2](t)
+      if x and y then return x, y end
+    end
+  end
+  return nil
+end
+
+--- The columns of a value table: a list of {t = value of the variable (or nil), label = how to write it,
+--- y = {value per group}} sorted by t, the row names, and notes. wanted = {auto = true} or
+--- {x = {"1", "e", ...}, y = {"0", ...}} as read from the formula's "table" lines.
+function M.tableColumns(cfg, wanted)
+  local funcs, ranges, groupOf, groups = prepareCurves(cfg)
+  if not funcs then return nil, ranges end
+  local lo, hi = huge, -huge
+  for _, r in ipairs(ranges) do lo, hi = math.min(lo, r[1]), math.max(hi, r[2]) end
+  local parametric = groups[1].parametric
+  local exprText = ""
+  for _, c in ipairs(cfg.curves) do exprText = exprText .. " " .. c.exprX .. " " .. c.exprY end
+  local candidates = tableCandidates(lo, hi, exprText)
+  -- values found numerically (a highest point at 1.5707963) are a hair off: snap them to a nearby exact one (π/2)
+  local tolT = 1e-6 * math.max(1, hi - lo)
+  local function snap(t)
+    if abs(t) <= tolT then return 0.0, "0" end
+    for _, c in ipairs(candidates) do
+      if abs(c.t - t) <= tolT then return c.t, c.label end
+    end
+    return t, M.formatTableValue(t)
+  end
+
+  local columns, notes = {}, {}
+  local function addColumn(t, label, fixedY)
+    if t and not label then t, label = snap(t) end
+    for _, c in ipairs(columns) do
+      if t and c.t and abs(c.t - t) <= tolT then return false end
+    end
+    local col = { t = t, label = label, values = {} }
+    for g, group in ipairs(groups) do
+      if t then
+        local x, y = groupPoint(group, t, funcs, ranges)
+        col.values[g] = parametric and { x, y } or y
+      else
+        col.values[g] = parametric and { nil, fixedY } or fixedY
+      end
+    end
+    columns[#columns + 1] = col
+    return true
+  end
+
+  wanted = wanted or { auto = true }
+  for _, item in ipairs(wanted.x or {}) do
+    local t = M.constant(M.normalize(item))
+    if not t then return nil, "Couldn't read the table value '" .. item .. "'. Write it like  table: 1, e, 1/e, 2" end
+    addColumn(t, M.display((item:gsub("%f[%w_]pi%f[^%w_]", "π"):gsub("%*", ""))))
+  end
+  for _, item in ipairs(wanted.y or {}) do
+    local target = M.constant(M.normalize(item))
+    if not target then return nil, "Couldn't read the table value '" .. item .. "'. Write it like  table y = 0, 1" end
+    -- every x where a graph reaches this value
+    local found = 0
+    for i in ipairs(cfg.curves) do
+      do -- (for a parametric curve: where its y reaches the value)
+        local f = funcs[i][2]
+        local a, b = ranges[i][1], ranges[i][2]
+        local N = 400
+        local prevT, prevD
+        for k = 0, N do
+          local t = a + (b - a) * k / N
+          local v = f(t)
+          local d = v and v - target
+          if d == 0 then
+            if addColumn(t) then found = found + 1 end
+            d = nil
+          elseif d and prevD and (prevD < 0) ~= (d < 0) then
+            local t0, t1, d0 = prevT, t, prevD
+            for _ = 1, 60 do
+              local m = (t0 + t1) / 2
+              local vm = f(m)
+              if not vm then break end
+              local dm = vm - target
+              if dm == 0 then t0, t1 = m, m break end
+              if (dm < 0) == (d0 < 0) then t0, d0 = m, dm else t1 = m end
+            end
+            local tz = (t0 + t1) / 2
+            local vz = f(tz)
+            if vz and abs(vz - target) <= 1e-6 * (1 + abs(target)) then
+              if addColumn(tz) then found = found + 1 end
+            end
+          end
+          prevT, prevD = t, d
+        end
+      end
+    end
+    if found == 0 then
+      addColumn(nil, "–", target)
+      notes[#notes + 1] = string.format("The graph never reaches %s.", item)
+    end
+  end
+  if wanted.auto then
+    -- the key values first (zeros, highest and lowest points, value at 0, crossings, range ends) ...
+    local keys = keyPointsOf(funcs, cfg.curves, ranges, groupOf, cfg.var, cfg.givenTMin, cfg.givenTMax,
+      function() return true end, 20)
+    local nKeys = 0
+    for _, k in ipairs(keys) do
+      if nKeys >= MAX_KEY_COLUMNS then break end
+      if addColumn(k.t) then nKeys = nKeys + 1 end
+    end
+    -- ... then x values with nice results, spread over the range
+    for _, c in ipairs(candidates) do
+      local score = c.nice
+      for _, group in ipairs(groups) do
+        local x, y = groupPoint(group, c.t, funcs, ranges)
+        if not y then score = nil break end
+        score = score + niceness(y) + (parametric and niceness(x) or 0)
+      end
+      c.score = score
+    end
+    table.sort(candidates, function(a, b)
+      if (a.score or -1) ~= (b.score or -1) then return (a.score or -1) > (b.score or -1) end
+      return abs(a.t) < abs(b.t)
+    end)
+    local minGap = (hi - lo) / 40
+    for _, c in ipairs(candidates) do
+      if #columns >= MAX_TABLE_COLUMNS then break end
+      if c.score then
+        local free = true
+        for _, col in ipairs(columns) do
+          if col.t and abs(col.t - c.t) < minGap then free = false break end
+        end
+        if free then addColumn(c.t, c.label) end
+      end
+    end
+  end
+  table.sort(columns, function(a, b)
+    if a.t and b.t then return a.t < b.t end
+    return a.t ~= nil and b.t == nil
+  end)
+
+  -- row names: the variable, then one row per function (x and y rows for a parametric curve)
+  local rows = { M.display(parametric and cfg.var or (cfg.autoLabelX or cfg.var)) }
+  if parametric then
+    rows[#rows + 1], rows[#rows + 2] = "x", "y"
+  else
+    for _, group in ipairs(groups) do rows[#rows + 1] = group.name or cfg.autoLabelY or "y" end
+  end
+  if #columns == 0 then return nil, "There are no values to put in the table." end
+  return { columns = columns, rows = rows, parametric = parametric, notes = notes }
+end
+
+--- The table as strokes and texts with its top left corner at (left, top). Returns
+--- {strokes, texts, width, height}.
+function M.buildTable(tbl, left, top, fontName, fontSize, color)
+  local size = fontSize or 12
+  local font = { name = fontName or "Sans", size = size }
+  color = color or 0
+  local pad, rowH = 0.5 * size, 1.6 * size
+  -- (counting characters, not bytes: "³" and "–" are one character each)
+  local function textWidth(text, sz) return (utf8.len(text) or #text) * sz * 0.6 end
+  -- cell texts: cells[row][column], column 0 = the row names
+  local cells = {}
+  for r, name in ipairs(tbl.rows) do cells[r] = { [0] = name } end
+  for c, col in ipairs(tbl.columns) do
+    cells[1][c] = col.label
+    if tbl.parametric then
+      local v = col.values[1] or {}
+      cells[2][c], cells[3][c] = M.formatTableValue(v[1]), M.formatTableValue(v[2])
+    else
+      for g = 1, #tbl.rows - 1 do cells[g + 1][c] = M.formatTableValue(col.values[g]) end
+    end
+  end
+  local widths, xs = {}, {}
+  local x = left
+  for c = 0, #tbl.columns do
+    local w = 0
+    for r = 1, #tbl.rows do w = math.max(w, textWidth(cells[r][c] or "", size)) end
+    widths[c] = math.max(w + 2 * pad, c == 0 and 1.4 * size or 2.2 * size)
+    xs[c] = x
+    x = x + widths[c]
+  end
+  local width, height = x - left, rowH * #tbl.rows
+  local strokes, texts = {}, {}
+  local function line(x1, y1, x2, y2)
+    strokes[#strokes + 1] = { x = { x1, x2 }, y = { y1, y2 }, width = 1, color = color, tool = "pen", lineStyle = "plain" }
+  end
+  -- a line under the variable's row, and lines between the columns
+  line(left, top + rowH, left + width + pad, top + rowH)
+  for c = 1, #tbl.columns do line(xs[c], top + 0.15 * size, xs[c], top + height - 0.1 * size) end
+  for r = 1, #tbl.rows do
+    for c = 0, #tbl.columns do
+      local s = cells[r][c] or ""
+      texts[#texts + 1] = { text = s, font = font, color = color,
+        x = xs[c] + (widths[c] - textWidth(s, size)) / 2, y = top + (r - 1) * rowH + (rowH - 1.25 * size) / 2 }
+    end
+  end
+  return { strokes = strokes, texts = texts, width = width, height = height }
 end
 
 return M

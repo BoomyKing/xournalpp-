@@ -22,8 +22,8 @@ ADD THE TOOLBAR BUTTONS
 1. Edit > Toolbars > Customize.
 2. If it asks whether to create a copy of the predefined toolbar, click Yes.
 3. Click the "Plugins" tab on the left of the panel that opens.
-4. Drag "Plot formula from text box" (graph icon) and/or
-   "Plot formula from text box (line only)" (curve icon) onto a toolbar, then Close.
+4. Drag "Plot formula from text box" (graph icon), "Plot formula from text box (line only)"
+   (curve icon) and/or "Value table from text box" (table icon) onto a toolbar, then Close.
 If the Plugins tab is empty, the plugin isn't loaded: check the Plugin menu, the
 folder location above, and Plugin > Plugin Manager.
 
@@ -66,6 +66,17 @@ Conditions: a <= v <= b, v > a, v < b, b >= v >= a, v in [a, b], |v| < c, |v - a
 Separate them with commas, semicolons, new lines or the word "for".
 (|v| > c isn't supported, since it would split the graph in two.)
 
+VALUE TABLES
+The table button (or Plugin > Value table from text box) puts a little x / y table under the
+formula. It picks the values itself: zeros, highest and lowest points, the ends of the range
+and x values with nice results (1/e, 1, e for ln x; multiples of π for sin x).
+To choose them yourself, add a line to the formula:
+   table: 1, e, 1/e, 2, -2       these x values (a value that doesn't exist shows as –)
+   table y = 0, 1                every x where the graph reaches these y values
+   table                         values picked automatically
+With a table line, the graph buttons also mark the table's points on the graph and draw the
+table under it (the line-only button only marks the points).
+
 TeX FORMULAS (the TeX tool)
 Select the TeX formula with the selection tool (or Edit > Select All), then press the button.
 Write it the normal LaTeX way, e.g.
@@ -103,6 +114,9 @@ CHANGES FROM THE ORIGINAL (github.com/xournalpp/xournalpp/pull/3811)
 - Replaced the luaxp parser with a small, sandboxed one with clear error messages.
 - Graph placed on the current page and selected; settings remembered; cm/mm units;
   fixed GTK warnings and a checkbox that greyed out the wrong field.
+
+NEW IN 2.16
+- Value tables: a table button, and "table" lines that also mark the points on the graph.
 
 NEW IN 2.15
 - Greek letters (ω, θ, α ..., or \omega in TeX) can be variables and function names.

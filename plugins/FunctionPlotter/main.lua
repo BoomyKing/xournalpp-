@@ -50,12 +50,15 @@ function initUi()
   end)
   local graphIcon = iconOk and "fp-plot-formula" or "xopp-draw-coordinate-system"
   local lineIcon = iconOk and "fp-plot-line" or "xopp-draw-spline"
+  local tableIcon = iconOk and "fp-value-table" or "xopp-table"
 
   app.registerUi({ menu = "Plot function...", callback = "showDialog" })
   app.registerUi({ menu = "Plot formula from text box", callback = "plotFormula",
     toolbarId = "FUNCTIONPLOTTER_GRAPH", iconName = graphIcon })
   app.registerUi({ menu = "Plot formula from text box (line only)", callback = "plotFormulaLine",
     toolbarId = "FUNCTIONPLOTTER_LINE", iconName = lineIcon })
+  app.registerUi({ menu = "Value table from text box", callback = "valueTable",
+    toolbarId = "FUNCTIONPLOTTER_TABLE", iconName = tableIcon })
 end
 
 local function errorBox(msg)
@@ -159,11 +162,31 @@ local function plotConfig(s, parsed, lineOnly, place)
   return cfg
 end
 
-local function insertGraph(cfg)
+-- Adds strokes and texts to the page as one undo step and selects them.
+local function insertElements(strokes, texts)
+  local refs = {}
+  if #strokes > 0 then refs = app.addStrokes({ strokes = strokes, allowUndoRedoAction = "grouped" }) or {} end
+  if #texts > 0 then
+    local trefs = app.addTexts({ texts = texts, allowUndoRedoAction = "grouped" }) or {}
+    for _, r in ipairs(trefs) do refs[#refs + 1] = r end
+  end
+  app.refreshPage()
+  if app.clearSelection and app.addToSelection and #refs > 0 then
+    pcall(app.clearSelection)
+    pcall(app.addToSelection, refs)
+  end
+end
+
+-- extra: {strokes, texts} drawn along with the graph (its value table)
+local function insertGraph(cfg, extra)
   local result, err = core.build(cfg)
   if not result then
     errorBox(err)
     return false
+  end
+  if extra then
+    for _, st in ipairs(extra.strokes) do result.strokes[#result.strokes + 1] = st end
+    for _, tx in ipairs(extra.texts) do result.texts[#result.texts + 1] = tx end
   end
   local refs = app.addStrokes({ strokes = result.strokes, allowUndoRedoAction = "grouped" }) or {}
   if #result.texts > 0 then
@@ -269,6 +292,15 @@ local function formulaTexts()
   return nil
 end
 
+-- The font of a text box, for its value table (TeX formulas have none: then 12 pt Sans).
+local function boxFont(box)
+  local f = box and box.font
+  if type(f) == "table" and type(f.size) == "number" and f.size > 0 then
+    return f.name or "Sans", f.size
+  end
+  return "Sans", 12
+end
+
 local function plotFromText(lineOnly)
   local boxes, selected = formulaTexts()
   if not boxes then
@@ -302,11 +334,64 @@ local function plotFromText(lineOnly)
     return gl + w / 2, gt + h / 2
   end)
   cfg.labelX, cfg.labelY = "", "" -- axis names always come from the written formula
-  insertGraph(cfg)
+
+  -- a "table" line in the formula: mark the table's points on the graph and draw the table under it
+  local extra
+  if parsed.table then
+    local tbl, terr = core.tableColumns(cfg, parsed.table)
+    if not tbl then
+      errorBox(terr)
+      return
+    end
+    cfg.markT = {}
+    for _, col in ipairs(tbl.columns) do
+      if col.t then cfg.markT[#cfg.markT + 1] = col.t end
+    end
+    for _, n in ipairs(tbl.notes) do print("FunctionPlotter: " .. n) end
+    if not lineOnly then
+      local name, size = boxFont(boxes[1])
+      local top = cfg.cy + cfg.height / 2 + 2 * (cfg.fontSize or 8) + 12 -- below the numbers under the axis
+      extra = core.buildTable(tbl, cfg.cx - cfg.width / 2, top, name, size, s.axisColor)
+    end
+  end
+  insertGraph(cfg, extra)
 end
 
 function plotFormula() plotFromText(false) end
 function plotFormulaLine() plotFromText(true) end
+
+-- The value table button: a table of x and y values under the formula, without a graph.
+function valueTable()
+  local boxes, selected = formulaTexts()
+  if not boxes then
+    errorBox("Write a formula in a text box first, for example\n\n    y = ln(x)\n\nthen press the button. Add a line "
+      .. "like  table: 1, e, 1/e, 2  to choose the x values, or  table y = 0, 1  for y values.")
+    return
+  end
+  local lines = {}
+  local left, bottom = math.huge, -math.huge
+  for _, b in ipairs(boxes) do
+    lines[#lines + 1] = b.text
+    left = math.min(left, b.x)
+    bottom = math.max(bottom, b.y + (b.height or 0))
+  end
+  local parsed, err = core.parseFormula(table.concat(lines, "\n"))
+  if not parsed then
+    errorBox(err .. (selected and "" or "\n\n(Text: " .. boxes[1].text .. ")"))
+    return
+  end
+  local s = loadSettings()
+  local cfg = plotConfig(s, parsed, false, function(w, h) return 0, 0 end)
+  local tbl, terr = core.tableColumns(cfg, parsed.table or { auto = true })
+  if not tbl then
+    errorBox(terr)
+    return
+  end
+  for _, n in ipairs(tbl.notes) do print("FunctionPlotter: " .. n) end
+  local name, size = boxFont(boxes[1])
+  local built = core.buildTable(tbl, math.max(left, 10), bottom + 12, name, size, s.axisColor)
+  insertElements(built.strokes, built.texts)
+end
 
 ---------------------------------------------------------------------------
 -- Dialog

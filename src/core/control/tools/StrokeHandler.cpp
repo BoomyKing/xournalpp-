@@ -1,6 +1,7 @@
 #include "StrokeHandler.h"
 
 #include <algorithm>  // for max, min
+#include <array>      // for array
 #include <cmath>      // for ceil, pow, abs, hypot, atan2, remainder
 #include <limits>     // for numeric_limits
 #include <memory>     // for unique_ptr, mak...
@@ -59,51 +60,71 @@ auto recognizedShapeWidth(const Stroke& stroke) -> double {
     return count > 0 ? sum / static_cast<double>(count) : stroke.getWidth();
 }
 
-/// A scribble turns back at least this many times along its main direction (4 passes)
+// --- scribble geometry (begin) ---
+/// A back-and-forth scribble (like shading) turns back at least this many times along its main direction (4 passes)
 constexpr int SCRIBBLE_MIN_REVERSALS = 3;
-/// ...and is at least this long (pt): smaller wiggles are dots and jitter
+/// A zigzag scribble ("mmmm" drawn over a word) swings across its main direction at least this many times
+constexpr int ZIGZAG_MIN_REVERSALS = 4;
+/// Scribbles are at least this long (pt): smaller wiggles are dots and jitter
 constexpr double SCRIBBLE_MIN_LENGTH = 8;
-/// A turn counts once the stroke has gone back this part of the scribble's length (smaller wiggles, like the loops
-/// of handwriting, don't count)
+/// A zigzag is at least this high (pt) and this part of its length, so that a shaky strike-through isn't one
+constexpr double ZIGZAG_MIN_HEIGHT = 3;
+constexpr double ZIGZAG_MIN_HEIGHT_PART = 0.12;
+/// A turn counts once the stroke has gone back this part of its extent in that direction (smaller wiggles, like the
+/// loops of handwriting, don't count)
 constexpr double SCRIBBLE_REVERSAL_PART = 0.3;
-/// A stroke under a scribble is erased when at least this part of its points lies in the scribbled area
+/// The scribbled area is the scribble's box (along its main direction), grown by this part of its height
+constexpr double SCRIBBLE_MARGIN_PART = 0.3;
+constexpr double SCRIBBLE_MIN_MARGIN = 2;
+/// A stroke under a scribble is erased when at least this part of its length lies in the scribbled area
 constexpr double SCRIBBLE_COVERED_PART = 0.6;
+/// Zigzags look a lot like handwriting (m, n, w), so they only erase what they cross at least this many times (a
+/// curly bracket drawn next to text doesn't)
+constexpr int ZIGZAG_MIN_CROSSINGS = 3;
 
-/// Whether the points go back and forth along their main direction, like a scribble crossing something out
-auto isScribble(const std::vector<Point>& pts) -> bool {
-    if (pts.size() < 12) {
-        return false;
+enum class ScribbleKind { NONE, BACK_AND_FORTH, ZIGZAG };
+
+/// The scribbled area: a box along the scribble's main direction (u) and across it (w = u rotated by 90 degrees)
+struct ScribbleArea {
+    double ux = 1, uy = 0;
+    double loU = 0, hiU = 0, loW = 0, hiW = 0;
+
+    auto along(const Point& p) const -> double { return p.x * ux + p.y * uy; }
+    auto across(const Point& p) const -> double { return -p.x * uy + p.y * ux; }
+    auto contains(const Point& p) const -> bool {
+        const double a = along(p), c = across(p);
+        return loU <= a && a <= hiU && loW <= c && c <= hiW;
     }
-    // main direction: the principal axis of the points
-    double mx = 0, my = 0;
-    for (const Point& p: pts) {
-        mx += p.x;
-        my += p.y;
+    /// Axis-aligned bounding box: minX, maxX, minY, maxY
+    auto bounds() const -> std::array<double, 4> {
+        std::array<double, 4> b{std::numeric_limits<double>::max(), std::numeric_limits<double>::lowest(),
+                                std::numeric_limits<double>::max(), std::numeric_limits<double>::lowest()};
+        for (double a: {loU, hiU}) {
+            for (double c: {loW, hiW}) {
+                const double x = a * ux - c * uy, y = a * uy + c * ux;
+                b[0] = std::min(b[0], x);
+                b[1] = std::max(b[1], x);
+                b[2] = std::min(b[2], y);
+                b[3] = std::max(b[3], y);
+            }
+        }
+        return b;
     }
-    mx /= static_cast<double>(pts.size());
-    my /= static_cast<double>(pts.size());
-    double sxx = 0, syy = 0, sxy = 0;
-    for (const Point& p: pts) {
-        sxx += (p.x - mx) * (p.x - mx);
-        syy += (p.y - my) * (p.y - my);
-        sxy += (p.x - mx) * (p.y - my);
-    }
-    const double angle = 0.5 * std::atan2(2 * sxy, sxx - syy);
-    const double ux = std::cos(angle), uy = std::sin(angle);
+};
+
+/// Counts how often the points turn back in the given direction (with hysteresis); also returns their extent in it
+auto countReversals(const std::vector<Point>& pts, double ux, double uy, double& extent) -> int {
     double lo = std::numeric_limits<double>::max(), hi = std::numeric_limits<double>::lowest();
     for (const Point& p: pts) {
         const double s = p.x * ux + p.y * uy;
         lo = std::min(lo, s);
         hi = std::max(hi, s);
     }
-    if (hi - lo < SCRIBBLE_MIN_LENGTH) {
-        return false;
-    }
-    const double turn = SCRIBBLE_REVERSAL_PART * (hi - lo);
+    extent = hi - lo;
+    const double turn = SCRIBBLE_REVERSAL_PART * extent;
     if (!(turn > 0)) {
-        return false;
+        return 0;
     }
-    // count the turns, with hysteresis
     int reversals = 0, dir = 0;
     const double start = pts.front().x * ux + pts.front().y * uy;
     double extreme = start;
@@ -122,44 +143,105 @@ auto isScribble(const std::vector<Point>& pts) -> bool {
             extreme = s;
         }
     }
-    return reversals >= SCRIBBLE_MIN_REVERSALS;
+    return reversals;
 }
 
-/// Convex hull of the points (counter-clockwise, Andrew's monotone chain)
-auto convexHull(std::vector<Point> pts) -> std::vector<Point> {
-    std::sort(pts.begin(), pts.end(),
-              [](const Point& a, const Point& b) { return a.x < b.x || (a.x == b.x && a.y < b.y); });
-    if (pts.size() < 3) {
-        return pts;
+/// Whether the points are a scribble crossing something out, and which kind; also returns the scribbled area
+auto classifyScribble(const std::vector<Point>& pts, ScribbleArea& area) -> ScribbleKind {
+    if (pts.size() < 12) {
+        return ScribbleKind::NONE;
     }
-    auto cross = [](const Point& o, const Point& a, const Point& b) {
-        return (a.x - o.x) * (b.y - o.y) - (a.y - o.y) * (b.x - o.x);
-    };
-    std::vector<Point> hull(2 * pts.size());
-    size_t k = 0;
+    // main direction: the principal axis of the points
+    double mx = 0, my = 0;
     for (const Point& p: pts) {
-        while (k >= 2 && cross(hull[k - 2], hull[k - 1], p) <= 0) k--;
-        hull[k++] = p;
+        mx += p.x;
+        my += p.y;
     }
-    for (size_t i = pts.size() - 1, t = k + 1; i-- > 0;) {
-        while (k >= t && cross(hull[k - 2], hull[k - 1], pts[i]) <= 0) k--;
-        hull[k++] = pts[i];
+    mx /= static_cast<double>(pts.size());
+    my /= static_cast<double>(pts.size());
+    double sxx = 0, syy = 0, sxy = 0;
+    for (const Point& p: pts) {
+        sxx += (p.x - mx) * (p.x - mx);
+        syy += (p.y - my) * (p.y - my);
+        sxy += (p.x - mx) * (p.y - my);
     }
-    hull.resize(k - 1);
-    return hull;
+    const double angle = 0.5 * std::atan2(2 * sxy, sxx - syy);
+    area.ux = std::cos(angle);
+    area.uy = std::sin(angle);
+
+    double length = 0, height = 0;
+    const int along = countReversals(pts, area.ux, area.uy, length);
+    const int across = countReversals(pts, -area.uy, area.ux, height);
+
+    ScribbleKind kind = ScribbleKind::NONE;
+    if (length >= SCRIBBLE_MIN_LENGTH && along >= SCRIBBLE_MIN_REVERSALS) {
+        kind = ScribbleKind::BACK_AND_FORTH;
+    } else if (length >= SCRIBBLE_MIN_LENGTH && across >= ZIGZAG_MIN_REVERSALS &&
+               height >= std::max(ZIGZAG_MIN_HEIGHT, ZIGZAG_MIN_HEIGHT_PART * length)) {
+        kind = ScribbleKind::ZIGZAG;
+    }
+    if (kind == ScribbleKind::NONE) {
+        return kind;
+    }
+
+    area.loU = area.loW = std::numeric_limits<double>::max();
+    area.hiU = area.hiW = std::numeric_limits<double>::lowest();
+    for (const Point& p: pts) {
+        area.loU = std::min(area.loU, area.along(p));
+        area.hiU = std::max(area.hiU, area.along(p));
+        area.loW = std::min(area.loW, area.across(p));
+        area.hiW = std::max(area.hiW, area.across(p));
+    }
+    const double margin = std::max(SCRIBBLE_MIN_MARGIN, SCRIBBLE_MARGIN_PART * height);
+    area.loU -= margin;
+    area.hiU += margin;
+    area.loW -= margin;
+    area.hiW += margin;
+    return kind;
 }
 
-/// Whether the point lies inside the convex polygon (counter-clockwise)
-auto insideConvex(const std::vector<Point>& hull, const Point& p) -> bool {
-    for (size_t i = 0; i < hull.size(); i++) {
-        const Point& a = hull[i];
-        const Point& b = hull[(i + 1) % hull.size()];
-        if ((b.x - a.x) * (p.y - a.y) - (b.y - a.y) * (p.x - a.x) < 0) {
-            return false;
+/// The part of the length of a path that lies in the area (sampled every half point)
+auto coveredPart(const std::vector<Point>& pts, const ScribbleArea& area) -> double {
+    if (pts.empty()) {
+        return 0;
+    }
+    size_t inside = area.contains(pts.front()) ? 1 : 0, total = 1;
+    for (size_t i = 0; i + 1 < pts.size(); i++) {
+        const Point& a = pts[i];
+        const Point& b = pts[i + 1];
+        const auto n = static_cast<size_t>(std::clamp(std::hypot(b.x - a.x, b.y - a.y) / 0.5, 1.0, 200.0));
+        for (size_t k = 1; k <= n; k++) {
+            const double t = static_cast<double>(k) / static_cast<double>(n);
+            inside += area.contains(Point(a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t)) ? 1 : 0;
+        }
+        total += n;
+    }
+    return static_cast<double>(inside) / static_cast<double>(total);
+}
+
+/// How often two paths cross each other (stops counting at limit)
+auto countCrossings(const std::vector<Point>& a, const std::vector<Point>& b, int limit) -> int {
+    auto side = [](const Point& o, const Point& p, const Point& q) {
+        return (p.x - o.x) * (q.y - o.y) - (p.y - o.y) * (q.x - o.x);
+    };
+    int crossings = 0;
+    for (size_t i = 0; i + 1 < a.size(); i++) {
+        const double minX = std::min(a[i].x, a[i + 1].x), maxX = std::max(a[i].x, a[i + 1].x);
+        const double minY = std::min(a[i].y, a[i + 1].y), maxY = std::max(a[i].y, a[i + 1].y);
+        for (size_t j = 0; j + 1 < b.size(); j++) {
+            if (std::max(b[j].x, b[j + 1].x) < minX || std::min(b[j].x, b[j + 1].x) > maxX ||
+                std::max(b[j].y, b[j + 1].y) < minY || std::min(b[j].y, b[j + 1].y) > maxY) {
+                continue;
+            }
+            if (side(b[j], b[j + 1], a[i]) * side(b[j], b[j + 1], a[i + 1]) < 0 &&
+                side(a[i], a[i + 1], b[j]) * side(a[i], a[i + 1], b[j + 1]) < 0 && ++crossings >= limit) {
+                return crossings;
+            }
         }
     }
-    return true;
+    return crossings;
 }
+// --- scribble geometry (end) ---
 
 auto hasFinitePoints(const Stroke& s) -> bool {
     const auto& pts = s.getPointVector();
@@ -522,39 +604,40 @@ void StrokeHandler::onButtonReleaseEvent(const PositionInputData& pos, double zo
 
 auto StrokeHandler::scratchOut(Layer* layer) -> bool {
     const auto& pts = stroke->getPointVector();
-    if (!isScribble(pts)) {
+    ScribbleArea area;
+    const ScribbleKind kind = classifyScribble(pts, area);
+    if (kind == ScribbleKind::NONE) {
         return false;
     }
-    const auto hull = convexHull(pts);
-    if (hull.size() < 3) {
-        return false;
-    }
-    const auto box = stroke->boundingRect();
+    const auto [minX, maxX, minY, maxY] = area.bounds();
     std::vector<const Element*> covered;
+    int crossings = 0;
     for (const Element* e: layer->getElementsView()) {
         if (e->getType() != ELEMENT_STROKE) {
             continue;
         }
         const auto r = e->boundingRect();
-        if (r.x > box.x + box.width || r.x + r.width < box.x || r.y > box.y + box.height || r.y + r.height < box.y) {
+        if (r.x > maxX || r.x + r.width < minX || r.y > maxY || r.y + r.height < minY) {
             continue;
         }
         const auto& points = static_cast<const Stroke*>(e)->getPointVector();
-        size_t inside = 0;
-        for (const Point& p: points) {
-            if (insideConvex(hull, p)) {
-                inside++;
-            }
-        }
-        if (!points.empty() &&
-            static_cast<double>(inside) >= SCRIBBLE_COVERED_PART * static_cast<double>(points.size())) {
+        if (coveredPart(points, area) >= SCRIBBLE_COVERED_PART) {
             covered.push_back(e);
+            if (kind == ScribbleKind::ZIGZAG) {
+                if (crossings < ZIGZAG_MIN_CROSSINGS) {
+                    crossings += countCrossings(pts, points, ZIGZAG_MIN_CROSSINGS - crossings);
+                }
+            }
         }
     }
     if (covered.empty()) {
         return false;  // a scribble on empty paper (shading) stays
     }
+    if (kind == ScribbleKind::ZIGZAG && crossings < ZIGZAG_MIN_CROSSINGS) {
+        return false;  // probably handwriting next to other strokes
+    }
 
+    const auto box = stroke->boundingRect();
     Range range(box);
     range.addPadding(stroke->getWidth());
     auto undo = std::make_unique<DeleteUndoAction>(page, true);

@@ -31,6 +31,7 @@
 #include "ColorSelectorToolItem.h"       // for ColorSelectorToolItem
 #include "ColorToolItem.h"               // for ColorToolItem
 #include "DrawingTypeComboToolButton.h"  // for DrawingTypeComboToolButton
+#include "FavoritePenToolItem.h"         // for FavoritePenToolItem
 #include "FontButton.h"                  // for FontButton
 #include "PluginPlaceholderLabel.h"      // for PluginPlaceholderLabel
 #include "PluginToolButton.h"            // for PluginToolButton
@@ -494,6 +495,11 @@ void ToolMenuHandler::initToolItems() {
             ComboToolButton::Entries{{_("Pen"), laserIcon, TOOL_LASER_POINTER_PEN},
                                      {_("Highlighter"), laserIcon, TOOL_LASER_POINTER_HIGHLIGHTER}},
             this->control->getActionDatabase()->getAction(Action::SELECT_TOOL));
+
+    // Favourite pens
+    for (size_t i = 0; i < FavoritePens::COUNT; i++) {
+        emplaceItem<FavoritePenToolItem>(control, i);
+    }
 
     // General tool configuration - working for every tool which support it
     emplaceCustomItemTgl("TOOL_FILL", Cat::TOOLS, Action::TOOL_FILL, "fill", _("Fill"));

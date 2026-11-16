@@ -237,6 +237,7 @@ void Settings::loadDefault() {
     this->snapRecognizedShapesEnabled = false;
     this->strokeHoldRecognizerEnabled = false;
     this->scratchOutEnabled = false;
+    this->favoritePens = "";
     this->strokeHoldRecognizerDelay = 600;
     this->restoreLineWidthEnabled = false;
 
@@ -693,6 +694,8 @@ void Settings::parseItem(xmlDocPtr doc, xmlNodePtr cur) {
         this->snapRecognizedShapesEnabled = xmlStrcmp(value, reinterpret_cast<const xmlChar*>("true")) == 0;
     } else if (xmlStrcmp(name, reinterpret_cast<const xmlChar*>("scratchOutEnabled")) == 0) {
         this->scratchOutEnabled = xmlStrcmp(value, reinterpret_cast<const xmlChar*>("true")) == 0;
+    } else if (xmlStrcmp(name, reinterpret_cast<const xmlChar*>("favoritePens")) == 0) {
+        this->favoritePens = reinterpret_cast<const char*>(value);
     } else if (xmlStrcmp(name, reinterpret_cast<const xmlChar*>("strokeHoldRecognizerEnabled")) == 0) {
         this->strokeHoldRecognizerEnabled = xmlStrcmp(value, reinterpret_cast<const xmlChar*>("true")) == 0;
     } else if (xmlStrcmp(name, reinterpret_cast<const xmlChar*>("strokeHoldRecognizerDelay")) == 0) {
@@ -1181,6 +1184,7 @@ void Settings::save() {
     SAVE_BOOL_PROP(snapRecognizedShapesEnabled);
     SAVE_BOOL_PROP(strokeHoldRecognizerEnabled);
     SAVE_BOOL_PROP(scratchOutEnabled);
+    SAVE_STRING_PROP(favoritePens);
     SAVE_UINT_PROP(strokeHoldRecognizerDelay);
     SAVE_BOOL_PROP(restoreLineWidthEnabled);
 
@@ -2342,6 +2346,16 @@ auto Settings::getStrokeHoldRecognizerEnabled() const -> bool { return this->str
 void Settings::setScratchOutEnabled(bool enabled) { this->scratchOutEnabled = enabled; }
 
 auto Settings::getScratchOutEnabled() const -> bool { return this->scratchOutEnabled; }
+
+auto Settings::getFavoritePens() const -> const std::string& { return this->favoritePens; }
+
+void Settings::setFavoritePens(const std::string& favorites) {
+    if (this->favoritePens == favorites) {
+        return;
+    }
+    this->favoritePens = favorites;
+    save();
+}
 
 void Settings::setStrokeHoldRecognizerDelay(unsigned int timeInMs) {
     // A delay of 0 would recognize the stroke as soon as it starts

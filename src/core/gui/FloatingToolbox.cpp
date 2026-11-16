@@ -208,9 +208,23 @@ auto FloatingToolbox::getOverlayPosition(GtkOverlay* overlay, GtkWidget* widget,
 
 bool FloatingToolbox::handleLeaveFloatingToolbox(GtkWidget* floatingToolbox, GdkEvent* event, FloatingToolbox* self) {
     if (floatingToolbox == self->floatingToolbox) {
-        if (self->floatingToolboxState != configuration) {
-            self->hide();
+        if (self->floatingToolboxState == configuration) {
+            return true;
         }
+        const GdkEventCrossing& crossing = event->crossing;
+        // Only close when the pointer really moves out of the toolbox. Ignore leave events caused by grabs (e.g. the
+        // stylus button press that opened the toolbox being released), by moving onto a button inside the toolbox,
+        // and by windows of other programs popping up over it (e.g. a tablet driver showing which button was pressed):
+        // in that case the pointer is still over the toolbox.
+        if (crossing.mode != GDK_CROSSING_NORMAL || crossing.detail == GDK_NOTIFY_INFERIOR) {
+            return true;
+        }
+        GtkAllocation alloc;
+        gtk_widget_get_allocation(floatingToolbox, &alloc);
+        if (crossing.x >= 0 && crossing.y >= 0 && crossing.x < alloc.width && crossing.y < alloc.height) {
+            return true;
+        }
+        self->hide();
         return true;
     }
     return false;

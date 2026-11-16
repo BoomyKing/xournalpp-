@@ -25,8 +25,10 @@
 #include "model/ElementContainer.h"          // for ElementContainer
 #include "model/ElementInsertionPosition.h"  // for InsertionOrder
 #include "model/PageRef.h"                   // for PageRef
+#include "model/Point.h"                     // for Point
 #include "undo/UndoAction.h"                 // for UndoAction (ptr only)
 #include "util/Color.h"                      // for Color
+#include "util/Point.h"                      // for Point
 #include "util/PointerContainerView.h"       // for PointerContainerView
 #include "util/Rectangle.h"                  // for Rectangle
 #include "util/raii/GSourceURef.h"           // for GSourceURef
@@ -47,6 +49,7 @@ class ObjectOutputStream;
 class XojFont;
 class Document;
 class EditSelection;
+class Stroke;
 
 namespace SelectionFactory {
 auto createFromFloatingElement(Control* ctrl, const PageRef& page, Layer* layer, XojPageView* view, ElementPtr e)
@@ -369,6 +372,27 @@ private:
 
     static bool handleEdgePan(EditSelection* self);
 
+    /**
+     * Corner editing: when the selection is a single line or polygon (e.g. a recognized shape), its corners are shown
+     * as dots that can be dragged to reshape it.
+     */
+    /// The selected line or polygon whose corners can be dragged, if any
+    Stroke* getShapeStroke() const;
+
+    /// Indices of the draggable corners of a line or polygon (the last point of a closed polygon repeats its first)
+    static std::vector<size_t> shapeCorners(const Stroke* s);
+
+    /// Where a point of the selected elements is shown, ignoring the rotation (document coordinates)
+    xoj::util::Point<double> shownPosition(const Point& p) const;
+
+    /// Starts the selection over around the given (already transformed) elements, without any pending transformation
+    void restartAround(InsertionOrder elts);
+
+    /// Moves the grabbed corner to the given position (document coordinates)
+    void moveCorner(Point p);
+
+    void drawCornerDot(cairo_t* cr, double x, double y, double zoom) const;
+
 private:  // DATA
     /**
      * The position (and rotation) relative to the current view
@@ -467,4 +491,10 @@ private:  // HANDLER
      * the selection in mouseDown while edge panning.
      */
     bool edgePanInhibitNext = false;
+
+    /// The corner under the pointer (set by getSelectionTypeForPos) and the one being dragged
+    size_t hoveredCorner = 0;
+    size_t grabbedCorner = 0;
+    /// The points of the shape when the corner drag started, for undo
+    std::vector<Point> shapeEditStartPoints;
 };

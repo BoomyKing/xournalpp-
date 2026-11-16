@@ -26,9 +26,11 @@
 #include "model/Layer.h"                          // for Layer
 #include "model/LineStyle.h"                      // for LineStyle
 #include "model/Point.h"                          // for Point
+#include "model/Stroke.h"                         // for Stroke
 #include "model/XojPage.h"                        // for XojPage
 #include "undo/ArrangeUndoAction.h"               // for ArrangeUndoAction
 #include "undo/InsertUndoAction.h"                // for InsertsUndoAction
+#include "undo/ShapeEditUndoAction.h"             // for ShapeEditUndoAction
 #include "undo/UndoRedoHandler.h"                 // for UndoRedoHandler
 #include "util/Range.h"                           // for Range
 #include "util/Util.h"                            // for cairo_set_dash_from_vector
@@ -531,6 +533,24 @@ void EditSelection::mouseUp() {
         return;
     }
 
+    if (this->mouseDownType == CURSOR_SELECTION_VERTEX) {
+        this->mouseDownType = CURSOR_SELECTION_NONE;
+        Stroke* s = getShapeStroke();
+        if (s) {
+            const auto& pts = s->getPointVector();
+            bool changed = !std::equal(pts.begin(), pts.end(), this->shapeEditStartPoints.begin(),
+                                       this->shapeEditStartPoints.end(),
+                                       [](const Point& a, const Point& b) { return a.x == b.x && a.y == b.y; });
+            if (changed) {
+                this->undo->addUndoAction(std::make_unique<ShapeEditUndoAction>(
+                        this->view->getPage(), s, std::move(this->shapeEditStartPoints), pts));
+            }
+        }
+        this->shapeEditStartPoints.clear();
+        updateMatrix();
+        return;
+    }
+
 
     PageRef page = this->view->getPage();
     Layer* layer = page->getSelectedLayer();
@@ -560,6 +580,21 @@ void EditSelection::mouseDown(CursorSelectionType type, double x, double y) {
 
     this->mouseDownType = type;
 
+    if (type == CURSOR_SELECTION_VERTEX) {
+        // Apply any pending move, scale or rotation, so that the corner can be dragged in page coordinates
+        restartAround(
+                this->contents->makeMoveEffective(this->getRect(), this->snappedBounds, this->preserveAspectRatio));
+        Stroke* s = getShapeStroke();
+        if (!s) {
+            this->mouseDownType = CURSOR_SELECTION_NONE;
+            return;
+        }
+        this->grabbedCorner = this->hoveredCorner;
+        this->shapeEditStartPoints = s->getPointVector();
+        this->view->getXournal()->repaintSelection(true);
+        return;
+    }
+
     // coordinates relative to top left corner of snapped bounds in coordinate system which is not modified
     this->relMousePosX = x / zoom - this->snappedBounds.x;
     this->relMousePosY = y / zoom - this->snappedBounds.y;
@@ -576,6 +611,11 @@ void EditSelection::mouseDown(CursorSelectionType type, double x, double y) {
  */
 void EditSelection::mouseMove(double mouseX, double mouseY, bool alt) {
     double zoom = this->view->getXournal()->getZoom();
+
+    if (this->mouseDownType == CURSOR_SELECTION_VERTEX) {
+        moveCorner(snappingHandler.snapToGrid(Point(mouseX / zoom, mouseY / zoom), alt));
+        return;
+    }
 
     if (this->mouseDownType == CURSOR_SELECTION_MOVE) {
         // compute translation (without snapping)
@@ -1027,6 +1067,24 @@ auto EditSelection::getSelectionTypeForPos(double x, double y, double zoom) -> C
     const int EDGE_PADDING = (this->btnWidth / 2) + 2;
     const int BORDER_PADDING = (this->btnWidth / 2);
 
+    if (const Stroke* s = getShapeStroke()) {
+        // The corner dots lie inside the selection box, so they are tested first
+        double best = EDGE_PADDING + 2;
+        bool found = false;
+        for (size_t i: shapeCorners(s)) {
+            auto q = shownPosition(s->getPoint(i));
+            double d = std::hypot(q.x * zoom - x, q.y * zoom - y);
+            if (d <= best) {
+                best = d;
+                this->hoveredCorner = i;
+                found = true;
+            }
+        }
+        if (found) {
+            return CURSOR_SELECTION_VERTEX;
+        }
+    }
+
     if (x1 - EDGE_PADDING <= x && x <= x1 + EDGE_PADDING && y1 - EDGE_PADDING <= y && y <= y1 + EDGE_PADDING) {
         return CURSOR_SELECTION_TOP_LEFT;
     }
@@ -1167,7 +1225,105 @@ void EditSelection::paint(cairo_t* cr, double zoom) {
         drawAnchorRect(cr, x + width, y + height, zoom);
 
         drawDeleteRect(cr, std::min(x, x + width) - (DELETE_PADDING + this->btnWidth) / zoom, y, zoom);
+
+        if (const Stroke* s = getShapeStroke()) {
+            for (size_t i: shapeCorners(s)) {
+                auto q = shownPosition(s->getPoint(i));
+                drawCornerDot(cr, q.x, q.y, zoom);
+            }
+        }
     }
+}
+
+void EditSelection::drawCornerDot(cairo_t* cr, double x, double y, double zoom) const {
+    GdkRGBA selectionColor = view->getSelectionColor();
+    cairo_new_path(cr);
+    cairo_arc(cr, x * zoom, y * zoom, this->btnWidth / 2.0, 0, 2 * M_PI);
+    cairo_set_source_rgb(cr, 1, 1, 1);
+    cairo_fill_preserve(cr);
+    gdk_cairo_set_source_rgba(cr, &selectionColor);
+    cairo_set_line_width(cr, 2);
+    cairo_stroke(cr);
+    cairo_set_line_width(cr, 1);
+}
+
+auto EditSelection::getShapeStroke() const -> Stroke* {
+    if (!this->contents) {
+        return nullptr;
+    }
+    const auto& elts = this->contents->getInsertionOrder();
+    if (elts.size() != 1 || elts.front().e->getType() != ELEMENT_STROKE) {
+        return nullptr;
+    }
+    auto* s = dynamic_cast<Stroke*>(elts.front().e.get());
+    return (s && !shapeCorners(s).empty()) ? s : nullptr;
+}
+
+auto EditSelection::shapeCorners(const Stroke* s) -> std::vector<size_t> {
+    const auto& pts = s->getPointVector();
+    std::vector<size_t> corners;
+    if (pts.size() == 2) {  // a line
+        corners = {0, 1};
+    } else if (pts.size() >= 4 && pts.size() <= 7 && pts.front().x == pts.back().x &&
+               pts.front().y == pts.back().y) {  // a closed polygon (triangle up to hexagon)
+        for (size_t i = 0; i + 1 < pts.size(); i++) {
+            corners.push_back(i);
+        }
+    }
+    return corners;
+}
+
+auto EditSelection::shownPosition(const Point& p) const -> xoj::util::Point<double> {
+    auto orig = this->contents->getOriginalBounds();
+    double fx = orig.width != 0 ? this->width / orig.width : 1;
+    double fy = orig.height != 0 ? this->height / orig.height : 1;
+    return {this->x + (p.x - orig.x) * fx, this->y + (p.y - orig.y) * fy};
+}
+
+void EditSelection::restartAround(InsertionOrder elts) {
+    Range bounds;
+    Range snapping;
+    for (const auto& e: elts) {
+        bounds = bounds.unite(Range(e.e->boundingRect()));
+        snapping = snapping.unite(Range(e.e->getSnappedBounds()));
+    }
+    const double PADDING = 12.;  // as in the constructor
+    this->x = bounds.minX - PADDING;
+    this->y = bounds.minY - PADDING;
+    this->width = bounds.getWidth() + 2 * PADDING;
+    this->height = bounds.getHeight() + 2 * PADDING;
+    this->snappedBounds = Rectangle<double>(snapping);
+    this->rotation = 0;
+
+    this->contents = std::make_unique<EditSelectionContents>(this->getRect(), this->snappedBounds, this->sourcePage,
+                                                             this->sourceLayer, this->view);
+    this->contents->replaceInsertionOrder(std::move(elts));
+
+    updateMatrix();
+    this->view->getXournal()->getCursor()->setRotationAngle(0);
+    this->view->getXournal()->getCursor()->setMirror(false);
+}
+
+void EditSelection::moveCorner(Point p) {
+    Stroke* s = getShapeStroke();
+    if (!s || this->grabbedCorner >= s->getPointCount()) {
+        return;
+    }
+    std::vector<Point> pts = s->getPointVector();
+    bool closed = pts.size() > 2;
+    auto setAt = [&](size_t i) {
+        pts[i].x = p.x;
+        pts[i].y = p.y;
+    };
+    setAt(this->grabbedCorner);
+    if (closed && this->grabbedCorner == 0) {
+        setAt(pts.size() - 1);
+    }
+
+    InsertionOrder elts = this->contents->stealInsertionOrder();
+    s->setPointVector(std::move(pts));
+    restartAround(std::move(elts));
+    this->view->getXournal()->repaintSelection(true);
 }
 
 void EditSelection::drawAnchorRotation(cairo_t* cr, double x, double y, double zoom) {

@@ -25,6 +25,7 @@
 #include "model/LineStyle.h"                                // for LineStyle
 #include "model/Stroke.h"                                   // for Stroke, STROKE_...
 #include "model/XojPage.h"                                  // for XojPage
+#include "undo/DeleteUndoAction.h"                          // for DeleteUndoAction
 #include "undo/InsertUndoAction.h"                          // for InsertUndoAction
 #include "undo/RecognizerUndoAction.h"                      // for RecognizerUndoA...
 #include "undo/UndoRedoHandler.h"                           // for UndoRedoHandler
@@ -56,6 +57,108 @@ auto recognizedShapeWidth(const Stroke& stroke) -> double {
         }
     }
     return count > 0 ? sum / static_cast<double>(count) : stroke.getWidth();
+}
+
+/// A scribble turns back at least this many times along its main direction (4 passes)
+constexpr int SCRIBBLE_MIN_REVERSALS = 3;
+/// ...and is at least this long (pt): smaller wiggles are dots and jitter
+constexpr double SCRIBBLE_MIN_LENGTH = 8;
+/// A turn counts once the stroke has gone back this part of the scribble's length (smaller wiggles, like the loops
+/// of handwriting, don't count)
+constexpr double SCRIBBLE_REVERSAL_PART = 0.3;
+/// A stroke under a scribble is erased when at least this part of its points lies in the scribbled area
+constexpr double SCRIBBLE_COVERED_PART = 0.6;
+
+/// Whether the points go back and forth along their main direction, like a scribble crossing something out
+auto isScribble(const std::vector<Point>& pts) -> bool {
+    if (pts.size() < 12) {
+        return false;
+    }
+    // main direction: the principal axis of the points
+    double mx = 0, my = 0;
+    for (const Point& p: pts) {
+        mx += p.x;
+        my += p.y;
+    }
+    mx /= static_cast<double>(pts.size());
+    my /= static_cast<double>(pts.size());
+    double sxx = 0, syy = 0, sxy = 0;
+    for (const Point& p: pts) {
+        sxx += (p.x - mx) * (p.x - mx);
+        syy += (p.y - my) * (p.y - my);
+        sxy += (p.x - mx) * (p.y - my);
+    }
+    const double angle = 0.5 * std::atan2(2 * sxy, sxx - syy);
+    const double ux = std::cos(angle), uy = std::sin(angle);
+    double lo = std::numeric_limits<double>::max(), hi = std::numeric_limits<double>::lowest();
+    for (const Point& p: pts) {
+        const double s = p.x * ux + p.y * uy;
+        lo = std::min(lo, s);
+        hi = std::max(hi, s);
+    }
+    if (hi - lo < SCRIBBLE_MIN_LENGTH) {
+        return false;
+    }
+    const double turn = SCRIBBLE_REVERSAL_PART * (hi - lo);
+    if (!(turn > 0)) {
+        return false;
+    }
+    // count the turns, with hysteresis
+    int reversals = 0, dir = 0;
+    const double start = pts.front().x * ux + pts.front().y * uy;
+    double extreme = start;
+    for (const Point& p: pts) {
+        const double s = p.x * ux + p.y * uy;
+        if (dir == 0) {
+            if (std::abs(s - start) > turn) {
+                dir = s > start ? 1 : -1;
+                extreme = s;
+            }
+        } else if ((s - extreme) * dir > 0) {
+            extreme = s;
+        } else if ((extreme - s) * dir > turn) {
+            reversals++;
+            dir = -dir;
+            extreme = s;
+        }
+    }
+    return reversals >= SCRIBBLE_MIN_REVERSALS;
+}
+
+/// Convex hull of the points (counter-clockwise, Andrew's monotone chain)
+auto convexHull(std::vector<Point> pts) -> std::vector<Point> {
+    std::sort(pts.begin(), pts.end(),
+              [](const Point& a, const Point& b) { return a.x < b.x || (a.x == b.x && a.y < b.y); });
+    if (pts.size() < 3) {
+        return pts;
+    }
+    auto cross = [](const Point& o, const Point& a, const Point& b) {
+        return (a.x - o.x) * (b.y - o.y) - (a.y - o.y) * (b.x - o.x);
+    };
+    std::vector<Point> hull(2 * pts.size());
+    size_t k = 0;
+    for (const Point& p: pts) {
+        while (k >= 2 && cross(hull[k - 2], hull[k - 1], p) <= 0) k--;
+        hull[k++] = p;
+    }
+    for (size_t i = pts.size() - 1, t = k + 1; i-- > 0;) {
+        while (k >= t && cross(hull[k - 2], hull[k - 1], pts[i]) <= 0) k--;
+        hull[k++] = pts[i];
+    }
+    hull.resize(k - 1);
+    return hull;
+}
+
+/// Whether the point lies inside the convex polygon (counter-clockwise)
+auto insideConvex(const std::vector<Point>& hull, const Point& p) -> bool {
+    for (size_t i = 0; i < hull.size(); i++) {
+        const Point& a = hull[i];
+        const Point& b = hull[(i + 1) % hull.size()];
+        if ((b.x - a.x) * (p.y - a.y) - (b.y - a.y) * (p.x - a.x) < 0) {
+            return false;
+        }
+    }
+    return true;
 }
 
 auto hasFinitePoints(const Stroke& s) -> bool {
@@ -356,6 +459,10 @@ void StrokeHandler::onButtonReleaseEvent(const PositionInputData& pos, double zo
 
     Layer* layer = page->getSelectedLayer();
 
+    if (!heldShape && control->getSettings()->getScratchOutEnabled() && scratchOut(layer)) {
+        return;  // the scribble erased the strokes under it, and isn't kept itself
+    }
+
     UndoRedoHandler* undo = control->getUndoRedoHandler();
     undo->addUndoAction(std::make_unique<InsertUndoAction>(page, layer, stroke.get()));
 
@@ -411,6 +518,66 @@ void StrokeHandler::onButtonReleaseEvent(const PositionInputData& pos, double zo
     this->viewPool->dispatchAndClear(xoj::view::StrokeToolView::FINALIZATION_REQUEST, Range());
 
     page->fireElementChanged(ptr);
+}
+
+auto StrokeHandler::scratchOut(Layer* layer) -> bool {
+    const auto& pts = stroke->getPointVector();
+    if (!isScribble(pts)) {
+        return false;
+    }
+    const auto hull = convexHull(pts);
+    if (hull.size() < 3) {
+        return false;
+    }
+    const auto box = stroke->boundingRect();
+    std::vector<const Element*> covered;
+    for (const Element* e: layer->getElementsView()) {
+        if (e->getType() != ELEMENT_STROKE) {
+            continue;
+        }
+        const auto r = e->boundingRect();
+        if (r.x > box.x + box.width || r.x + r.width < box.x || r.y > box.y + box.height || r.y + r.height < box.y) {
+            continue;
+        }
+        const auto& points = static_cast<const Stroke*>(e)->getPointVector();
+        size_t inside = 0;
+        for (const Point& p: points) {
+            if (insideConvex(hull, p)) {
+                inside++;
+            }
+        }
+        if (!points.empty() &&
+            static_cast<double>(inside) >= SCRIBBLE_COVERED_PART * static_cast<double>(points.size())) {
+            covered.push_back(e);
+        }
+    }
+    if (covered.empty()) {
+        return false;  // a scribble on empty paper (shading) stays
+    }
+
+    Range range(box);
+    range.addPadding(stroke->getWidth());
+    auto undo = std::make_unique<DeleteUndoAction>(page, true);
+    Document* doc = control->getDocument();
+    for (const Element* e: covered) {
+        Range r(e->boundingRect());
+        r.addPadding(static_cast<const Stroke*>(e)->getWidth());
+        range = range.unite(r);
+        doc->lock();
+        auto [element, pos] = layer->removeElement(e);
+        doc->unlock();
+        if (pos != -1) {
+            undo->addElement(layer, std::move(element), pos);
+        }
+    }
+    control->getUndoRedoHandler()->addUndoAction(std::move(undo));
+
+    Range scribbleRange(box);
+    scribbleRange.addPadding(stroke->getWidth());
+    this->viewPool->dispatchAndClear(xoj::view::StrokeToolView::CANCELLATION_REQUEST, scribbleRange);
+    stroke.reset();
+    page->fireRangeChanged(range);
+    return true;
 }
 
 void StrokeHandler::strokeRecognizerDetected(std::unique_ptr<Stroke> recognized, Layer* layer) {

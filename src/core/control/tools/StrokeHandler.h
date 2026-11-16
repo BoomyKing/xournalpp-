@@ -127,6 +127,9 @@ private:
     /// Whether the held shape can replace the stroke when the pen is lifted (and is not, e.g., a line of length 0)
     bool isUsableHeldShape() const;
 
+    /// If the stroke is a scribble over strokes, erases them (undoably) and drops the scribble. Returns whether it did.
+    bool scratchOut(Layer* layer);
+
     /// Pen movements smaller than this (in screen pixels) still count as holding still
     static constexpr double HOLD_TOLERANCE = 4.0;
     /// Rotations smaller than this (in radians) are ignored, so that resizing a held shape does not tilt it

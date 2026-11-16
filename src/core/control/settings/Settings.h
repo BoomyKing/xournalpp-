@@ -543,6 +543,10 @@ public:
     void setStrokeHoldRecognizerEnabled(bool enabled);
     bool getStrokeHoldRecognizerEnabled() const;
 
+    /// Scribble over strokes to erase them
+    void setScratchOutEnabled(bool enabled);
+    bool getScratchOutEnabled() const;
+
     /// How long (in ms) the pen must be held still before the stroke is recognized
     static constexpr unsigned int MIN_STROKE_HOLD_RECOGNIZER_DELAY = 100;
     static constexpr unsigned int MAX_STROKE_HOLD_RECOGNIZER_DELAY = 10000;
@@ -1128,6 +1132,7 @@ private:
      */
     bool snapRecognizedShapesEnabled{};
     bool strokeHoldRecognizerEnabled{};        ///< Hold the pen still to recognize the stroke as a shape
+    bool scratchOutEnabled{};                  ///< Scribble over strokes to erase them
     unsigned int strokeHoldRecognizerDelay{};  ///< in ms
 
     /**

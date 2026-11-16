@@ -353,6 +353,7 @@ void SettingsDialog::load() {
     loadCheckbox("cbTrySelectOnStrokeFiltered", settings->getTrySelectOnStrokeFiltered());
     loadCheckbox("cbSnapRecognizedShapesEnabled", settings->getSnapRecognizedShapesEnabled());
     loadCheckbox("cbStrokeHoldRecognizerEnabled", settings->getStrokeHoldRecognizerEnabled());
+    loadCheckbox("cbScratchOutEnabled", settings->getScratchOutEnabled());
     loadCheckbox("cbRestoreLineWidthEnabled", settings->getRestoreLineWidthEnabled());
     loadCheckbox("cbStockIcons", settings->areStockIconsUsed());
     loadCheckbox("cbHideHorizontalScrollbar", settings->getScrollbarHideType() & SCROLLBAR_HIDE_HORIZONTAL);
@@ -762,6 +763,7 @@ void SettingsDialog::save() {
     settings->setTrySelectOnStrokeFiltered(getCheckbox("cbTrySelectOnStrokeFiltered"));
     settings->setSnapRecognizedShapesEnabled(getCheckbox("cbSnapRecognizedShapesEnabled"));
     settings->setStrokeHoldRecognizerEnabled(getCheckbox("cbStrokeHoldRecognizerEnabled"));
+    settings->setScratchOutEnabled(getCheckbox("cbScratchOutEnabled"));
     settings->setRestoreLineWidthEnabled(getCheckbox("cbRestoreLineWidthEnabled"));
     settings->setAreStockIconsUsed(getCheckbox("cbStockIcons"));
     settings->setPressureGuessingEnabled(getCheckbox("cbEnablePressureInference"));

@@ -61,7 +61,10 @@ private:
     void saveCurrent();
     void showMenu(GtkWidget* button);
     void refreshButtons();
+    /// Pango markup describing the pen saved in this slot
     std::string tooltip() const;
+    /// Shows or hides the card describing the pen next to the button
+    void showInfo(GtkWidget* button, bool show);
 
     static void onClicked(GtkButton* button, FavoritePenToolItem* self);
     static gboolean onButtonPress(GtkWidget* button, GdkEventButton* event, FavoritePenToolItem* self);

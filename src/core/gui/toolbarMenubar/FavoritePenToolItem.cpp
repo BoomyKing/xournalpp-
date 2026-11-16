@@ -14,12 +14,15 @@
 #include "control/settings/Settings.h"       // for Settings
 #include "enums/Action.enum.h"               // for Action
 #include "gui/FloatingToolbox.h"             // for FloatingToolbox
-#include "gui/MainWindow.h"                  // for MainWindow
-#include "model/StrokeStyle.h"               // for formatStyle
-#include "util/Color.h"                      // for cairo_set_source_rgbi
-#include "util/i18n.h"                       // for _, FS, _F
-#include "util/raii/CairoWrappers.h"         // for CairoSPtr
-#include "util/raii/GObjectSPtr.h"           // for GObjectSPtr
+#include "gui/MainWindow.h"
+#include "gui/toolbarMenubar/model/ColorPalette.h"  // for Palette
+#include "model/StrokeStyle.h"                      // for formatStyle
+#include "util/Color.h"                             // for cairo_set_source_rgbi
+#include "util/NamedColor.h"                        // for NamedColor
+#include "util/i18n.h"                              // for _, FS, _F
+#include "util/raii/CStringWrapper.h"               // for OwnedCString                  // for MainWindow
+#include "util/raii/CairoWrappers.h"                // for CairoSPtr
+#include "util/raii/GObjectSPtr.h"                  // for GObjectSPtr
 
 namespace FavoritePens {
 static auto split(const std::string& s, char sep) -> std::vector<std::string> {
@@ -183,14 +186,40 @@ auto FavoritePenToolItem::getNewToolIcon() const -> GtkWidget* { return newIcon(
 auto FavoritePenToolItem::tooltip() const -> std::string {
     auto pen = get();
     if (!pen) {
-        return FS(_F("Favourite pen {1} (empty): click to save the current pen here") % (slot + 1));
+        return FS(_F("<b>Favourite pen {1}</b>\nEmpty: tap to save the current pen here") % (slot + 1));
     }
-    std::string what = pen->tool == TOOL_HIGHLIGHTER ? _("Highlighter") : _("Pen");
-    what += ", " + sizeName(pen->size);
+    // colour: its name in the palette if it has one, its hex code otherwise
+    const auto rgb = static_cast<uint32_t>(pen->color) & 0xffffffU;
+    char hex[16];
+    std::snprintf(hex, sizeof(hex), "#%06" PRIx32, rgb);
+    std::string colorName = hex;
+    const Palette& palette = control->getPalette();
+    for (size_t i = 0; i < palette.size(); i++) {
+        const NamedColor& c = palette.getColorAt(i);
+        if ((static_cast<uint32_t>(c.getColor()) & 0xffffffU) == rgb) {
+            colorName = c.getName();
+            break;
+        }
+    }
+    std::string style;
     if (pen->tool == TOOL_PEN && pen->lineStyle != "plain") {
-        what += ", " + pen->lineStyle;
+        style = pen->lineStyle == "dash"    ? _("dashed") :
+                pen->lineStyle == "dashdot" ? _("dash-dotted") :
+                pen->lineStyle == "dot"     ? _("dotted") :
+                                              _("custom dashes");
     }
-    return FS(_F("Favourite pen {1}: {2}\nRight-click or long-press to replace or clear it") % (slot + 1) % what);
+    auto escapedName = xoj::util::OwnedCString::assumeOwnership(g_markup_escape_text(colorName.c_str(), -1));
+    std::string text = "<b>" + std::string(pen->tool == TOOL_HIGHLIGHTER ? _("Highlighter") : _("Pen")) + "</b>\n";
+    text += std::string("<span foreground=\"") + hex + "\">⬤</span>  " + escapedName.get() + "\n";
+    text += FS(_F("Size: {1}") % sizeName(pen->size));
+    if (!style.empty()) {
+        text += "\n" + FS(_F("Line: {1}") % style);
+    }
+    if (pen->fill) {
+        text += std::string("\n") + _("Filled shapes");
+    }
+    text += std::string("\n<small>") + _("Long-press or right-click to change") + "</small>";
+    return text;
 }
 
 auto FavoritePenToolItem::createItem(bool) -> xoj::util::WidgetSPtr {
@@ -198,8 +227,36 @@ auto FavoritePenToolItem::createItem(bool) -> xoj::util::WidgetSPtr {
     gtk_widget_set_can_focus(btn, false);
     gtk_button_set_relief(GTK_BUTTON(btn), GTK_RELIEF_NONE);
     gtk_button_set_image(GTK_BUTTON(btn), newIcon(get()));
-    gtk_widget_set_tooltip_text(btn, tooltip().c_str());
     g_signal_connect(btn, "clicked", G_CALLBACK(onClicked), this);
+
+    // A card describing the pen, shown as soon as the pointer (or a hovering stylus) is over the button: regular
+    // tooltips need the pointer to rest still for a while, which is hard with a stylus
+    GtkWidget* info = gtk_popover_new(btn);
+    gtk_popover_set_modal(GTK_POPOVER(info), false);
+    gtk_popover_set_position(GTK_POPOVER(info), GTK_POS_BOTTOM);
+    GtkWidget* label = gtk_label_new(nullptr);
+    gtk_widget_set_margin_start(label, 8);
+    gtk_widget_set_margin_end(label, 8);
+    gtk_widget_set_margin_top(label, 6);
+    gtk_widget_set_margin_bottom(label, 6);
+    gtk_container_add(GTK_CONTAINER(info), label);
+    gtk_widget_show(label);
+    g_object_set_data(G_OBJECT(btn), "favorite-info", info);
+    g_object_set_data(G_OBJECT(btn), "favorite-info-label", label);
+    gtk_widget_add_events(btn, GDK_ENTER_NOTIFY_MASK | GDK_LEAVE_NOTIFY_MASK);
+    g_signal_connect(btn, "enter-notify-event", G_CALLBACK(+[](GtkWidget* b, GdkEvent*, FavoritePenToolItem* self) {
+                         self->showInfo(b, true);
+                         return gboolean(false);
+                     }),
+                     this);
+    g_signal_connect(btn, "leave-notify-event", G_CALLBACK(+[](GtkWidget* b, GdkEvent* e, FavoritePenToolItem* self) {
+                         if (e->crossing.mode != GDK_CROSSING_NORMAL) {
+                             return gboolean(false);  // caused by the card itself appearing, not by the pointer
+                         }
+                         self->showInfo(b, false);
+                         return gboolean(false);
+                     }),
+                     this);
     g_signal_connect(btn, "button-press-event", G_CALLBACK(onButtonPress), this);
 
     GtkGesture* longPress = gtk_gesture_long_press_new(btn);
@@ -222,10 +279,22 @@ void FavoritePenToolItem::onButtonDestroyed(gpointer self, GObject* button) {
 }
 
 void FavoritePenToolItem::refreshButtons() {
-    const std::string tip = tooltip();
     for (GtkWidget* b: buttons) {
         gtk_button_set_image(GTK_BUTTON(b), newIcon(get()));
-        gtk_widget_set_tooltip_text(b, tip.c_str());
+    }
+}
+
+void FavoritePenToolItem::showInfo(GtkWidget* button, bool show) {
+    auto* info = static_cast<GtkWidget*>(g_object_get_data(G_OBJECT(button), "favorite-info"));
+    auto* label = static_cast<GtkWidget*>(g_object_get_data(G_OBJECT(button), "favorite-info-label"));
+    if (!info || !label) {
+        return;
+    }
+    if (show) {
+        gtk_label_set_markup(GTK_LABEL(label), tooltip().c_str());
+        gtk_widget_show(info);
+    } else {
+        gtk_widget_hide(info);
     }
 }
 
@@ -272,6 +341,9 @@ void FavoritePenToolItem::saveCurrent() {
 }
 
 void FavoritePenToolItem::activate() {
+    for (GtkWidget* b: buttons) {
+        showInfo(b, false);
+    }
     auto pen = get();
     if (!pen) {
         saveCurrent();
@@ -299,6 +371,7 @@ void FavoritePenToolItem::activate() {
 }
 
 void FavoritePenToolItem::showMenu(GtkWidget* button) {
+    showInfo(button, false);
     GtkWidget* menu = gtk_menu_new();
     GtkWidget* save = gtk_menu_item_new_with_label(_("Save current pen here"));
     g_signal_connect_swapped(save, "activate", G_CALLBACK(+[](FavoritePenToolItem* self) { self->saveCurrent(); }),

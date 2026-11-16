@@ -11,11 +11,14 @@
 
 #pragma once
 
+#include <atomic>       // for atomic
 #include <cstddef>      // for size_t
+#include <cstdint>      // for int64_t
 #include <optional>     // for optional
 #include <string>       // for string
 #include <string_view>  // for string_view
 #include <utility>      // for pair, make_pair
+#include <vector>       // for vector
 
 #include <cairo.h>                  // for cairo_surface_t, cairo_status_t
 #include <gdk-pixbuf/gdk-pixbuf.h>  // for GdkPixbufFormat, GdkPixbuf
@@ -77,6 +80,19 @@ public:
 
     [[maybe_unused]] GdkPixbufFormat* getImageFormat() const;
 
+    /// Whether the raw data is a GIF. GIFs are saved as they are, so that their animation is kept.
+    bool isGif() const;
+
+    /// Whether the image is an animated GIF whose frames are ready (known once the image has been rendered)
+    bool isAnimated() const;
+
+    /// Shows the frame that is due at the given time (as returned by g_get_monotonic_time()).
+    /// Returns whether the frame shown changed. To be called from the main thread.
+    bool advanceAnimation(int64_t now) const;
+
+    /// Milliseconds until the next frame of an animated image is due
+    int msUntilNextFrame(int64_t now) const;
+
     static constexpr std::pair<int, int> NOSIZE = std::make_pair(-1, -1);
 
 public:
@@ -87,6 +103,12 @@ public:
 private:
     void calcSize() const override;
 
+    /// Renders all frames of an animated GIF, if the data is one and they fit in memory
+    void renderAnimation(GdkPixbufAnimation* animation) const;
+
+    /// Frees the frames of an animated GIF
+    void clearAnimation() const;
+
 private:
     /// Temporary surface used as a render buffer.
     mutable cairo_surface_t* image = nullptr;
@@ -96,4 +118,13 @@ private:
     mutable std::pair<int, int> imageSize = {-1, -1};
 
     std::string data;
+
+    /// The frames of an animated GIF, how long each one is shown (ms), and the time all of them take (ms).
+    /// Written once by renderAnimation(), then only read: the surfaces stay alive while they may be drawn.
+    mutable std::vector<cairo_surface_t*> frames;
+    mutable std::vector<int> frameDelays;
+    mutable int64_t animationDuration = 0;
+    mutable std::atomic<bool> framesReady{false};
+    /// The frame drawn now (set by advanceAnimation() in the main thread, read while rendering)
+    mutable std::atomic<size_t> currentFrame{0};
 };

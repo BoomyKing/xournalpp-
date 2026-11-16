@@ -3,7 +3,9 @@
 #include <algorithm>  // for min
 #include <array>      // for array
 #include <cmath>      // for sqrt
+#include <cstring>    // for strcmp
 #include <memory>
+#include <string_view>  // for string_view
 #include <utility>  // for move, pair
 
 #include <cairo.h>    // for cairo_surface_destroy
@@ -23,7 +25,70 @@ using xoj::util::Rectangle;
 
 Image::Image(): Element(ELEMENT_IMAGE) {}
 
+namespace {
+/// Largest memory (bytes) the rendered frames of one animated GIF may take. Bigger GIFs show their first frame.
+constexpr uint64_t MAX_ANIMATION_BYTES = 256u << 20;
+/// Shortest time a frame is shown (ms), as browsers do: GIFs with 0 delays would otherwise spin as fast as possible
+constexpr int MIN_FRAME_DELAY = 20;
+
+/// Number of frames in GIF data, found by walking its blocks (without decoding the pixels). 0 if it isn't a GIF.
+auto countGifFrames(std::string_view d) -> size_t {
+    if (d.size() < 13 || d.substr(0, 4) != "GIF8") {
+        return 0;
+    }
+    auto byte = [&](size_t i) { return static_cast<unsigned char>(d[i]); };
+    size_t pos = 13;
+    if (byte(10) & 0x80) {  // global color table
+        pos += 3u * (1u << ((byte(10) & 7) + 1));
+    }
+    auto skipSubBlocks = [&]() {
+        while (pos < d.size()) {
+            size_t len = byte(pos++);
+            if (len == 0) {
+                break;
+            }
+            pos += len;
+        }
+    };
+    size_t count = 0;
+    while (pos < d.size()) {
+        unsigned char block = byte(pos++);
+        if (block == 0x2C) {  // image descriptor
+            if (pos + 9 > d.size()) {
+                break;
+            }
+            unsigned char flags = byte(pos + 8);
+            pos += 9;
+            if (flags & 0x80) {  // local color table
+                pos += 3u * (1u << ((flags & 7) + 1));
+            }
+            pos++;  // LZW minimum code size
+            skipSubBlocks();
+            count++;
+        } else if (block == 0x21) {  // extension
+            pos++;                   // label
+            skipSubBlocks();
+        } else {  // 0x3B trailer, or broken data
+            break;
+        }
+    }
+    return count;
+}
+
+/// Copies a pixbuf to a new cairo image surface
+auto surfaceFromPixbuf(GdkPixbuf* pixbuf) -> cairo_surface_t* {
+    cairo_surface_t* surface = cairo_image_surface_create(CAIRO_FORMAT_ARGB32, gdk_pixbuf_get_width(pixbuf),
+                                                          gdk_pixbuf_get_height(pixbuf));
+    cairo_t* cr = cairo_create(surface);
+    gdk_cairo_set_source_pixbuf(cr, pixbuf, 0, 0);
+    cairo_paint(cr);
+    cairo_destroy(cr);
+    return surface;
+}
+}  // namespace
+
 Image::~Image() {
+    clearAnimation();
     if (this->image) {
         cairo_surface_destroy(this->image);
         this->image = nullptr;
@@ -46,6 +111,19 @@ auto Image::clone() const -> ElementPtr {
     img->data = this->data;
 
     img->image = cairo_surface_reference(this->image);
+    if (this->format) {
+        img->format = gdk_pixbuf_format_copy(this->format);
+    }
+    img->imageSize = this->imageSize;
+    if (this->framesReady) {
+        for (cairo_surface_t* frame: this->frames) {
+            img->frames.push_back(cairo_surface_reference(frame));
+        }
+        img->frameDelays = this->frameDelays;
+        img->animationDuration = this->animationDuration;
+        img->currentFrame = this->currentFrame.load();
+        img->framesReady = true;
+    }
     img->snappedBounds = this->snappedBounds;
     img->sizeCalculated = this->sizeCalculated;
 
@@ -65,6 +143,7 @@ void Image::setHeight(double height) {
 void Image::setImage(std::string_view data) { setImage(std::string(data)); }
 
 void Image::setImage(std::string&& data) {
+    clearAnimation();
     if (this->image) {
         cairo_surface_destroy(this->image);
         this->image = nullptr;
@@ -193,13 +272,121 @@ auto Image::renderBuffer() const -> std::optional<std::string> {
     gdk_cairo_set_source_pixbuf(cr, pixbuf.get(), 0, 0);
     cairo_paint(cr);
     cairo_destroy(cr);
+
+    if (GdkPixbufAnimation* animation = gdk_pixbuf_loader_get_animation(loader.get());
+        animation && !gdk_pixbuf_animation_is_static_image(animation)) {
+        renderAnimation(animation);
+    }
     return std::nullopt;
+}
+
+void Image::renderAnimation(GdkPixbufAnimation* animation) const {
+    const size_t count = countGifFrames(this->data);
+    const int w = gdk_pixbuf_animation_get_width(animation);
+    const int h = gdk_pixbuf_animation_get_height(animation);
+    if (count < 2 || w <= 0 || h <= 0) {
+        return;
+    }
+    if (static_cast<uint64_t>(count) * static_cast<uint64_t>(w) * static_cast<uint64_t>(h) * 4 > MAX_ANIMATION_BYTES) {
+        g_warning("Animated GIF too big to animate (%zu frames of %d x %d): showing its first frame", count, w, h);
+        return;
+    }
+    // Step through the frames with gdk-pixbuf's iterator: it composes each frame onto the previous ones as the
+    // GIF says (transparency, disposal), so every frame is a complete picture
+    G_GNUC_BEGIN_IGNORE_DEPRECATIONS  // gdk-pixbuf's animation API still takes a GTimeVal
+            GTimeVal time = {0, 0};
+    xoj::util::GObjectSPtr<GdkPixbufAnimationIter> iter(gdk_pixbuf_animation_get_iter(animation, &time),
+                                                        xoj::util::adopt);
+    std::vector<cairo_surface_t*> newFrames;
+    std::vector<int> delays;
+    int64_t total = 0;
+    for (size_t i = 0; i < count; i++) {
+        GdkPixbuf* pixbuf = gdk_pixbuf_animation_iter_get_pixbuf(iter.get());
+        if (!pixbuf || gdk_pixbuf_get_width(pixbuf) != w || gdk_pixbuf_get_height(pixbuf) != h) {
+            break;
+        }
+        newFrames.push_back(surfaceFromPixbuf(pixbuf));
+        int delay = gdk_pixbuf_animation_iter_get_delay_time(iter.get());
+        if (delay < 0) {  // the last frame stays forever
+            delays.push_back(-1);
+            break;
+        }
+        delay = std::max(delay, MIN_FRAME_DELAY);
+        delays.push_back(delay);
+        total += delay;
+        g_time_val_add(&time, static_cast<glong>(delay) * 1000);
+        gdk_pixbuf_animation_iter_advance(iter.get(), &time);
+    }
+    G_GNUC_END_IGNORE_DEPRECATIONS
+    if (newFrames.size() < 2 || total <= 0 || delays.back() < 0) {
+        // nothing to animate (or an animation that stops: shown as its first frame)
+        for (cairo_surface_t* f: newFrames) {
+            cairo_surface_destroy(f);
+        }
+        return;
+    }
+    this->frames = std::move(newFrames);
+    this->frameDelays = std::move(delays);
+    this->animationDuration = total;
+    this->currentFrame = 0;
+    this->framesReady = true;
+}
+
+void Image::clearAnimation() const {
+    this->framesReady = false;
+    for (cairo_surface_t* frame: this->frames) {
+        cairo_surface_destroy(frame);
+    }
+    this->frames.clear();
+    this->frameDelays.clear();
+    this->animationDuration = 0;
+    this->currentFrame = 0;
+}
+
+auto Image::isGif() const -> bool {
+    return this->format && std::strcmp(gdk_pixbuf_format_get_name(this->format), "gif") == 0;
+}
+
+auto Image::isAnimated() const -> bool { return this->framesReady; }
+
+auto Image::advanceAnimation(int64_t now) const -> bool {
+    if (!this->framesReady) {
+        return false;
+    }
+    int64_t t = (now / 1000) % this->animationDuration;
+    size_t frame = 0;
+    while (frame + 1 < this->frameDelays.size() && t >= this->frameDelays[frame]) {
+        t -= this->frameDelays[frame];
+        frame++;
+    }
+    if (frame == this->currentFrame) {
+        return false;
+    }
+    this->currentFrame = frame;
+    return true;
+}
+
+auto Image::msUntilNextFrame(int64_t now) const -> int {
+    if (!this->framesReady) {
+        return 1000;
+    }
+    int64_t t = (now / 1000) % this->animationDuration;
+    for (int delay: this->frameDelays) {
+        if (t < delay) {
+            return std::max(static_cast<int>(delay - t), 1);
+        }
+        t -= delay;
+    }
+    return 1;
 }
 
 auto Image::getImage() const -> cairo_surface_t* {
     if (auto opt = renderBuffer(); opt.has_value()) {
         // An error occurred
         g_warning("%s", opt->c_str());
+    }
+    if (this->framesReady) {
+        return this->frames[std::min(this->currentFrame.load(), this->frames.size() - 1)];
     }
     return this->image;
 }
@@ -241,12 +428,8 @@ void Image::readSerialized(ObjectInputStream& in) {
     this->width = in.readDouble();
     this->height = in.readDouble();
 
-    if (this->image) {
-        cairo_surface_destroy(this->image);
-        this->image = nullptr;
-    }
-
-    this->data = in.readImage();
+    // (setImage also finds the format: without it, a pasted GIF wouldn't be saved as a GIF)
+    setImage(in.readImage());
 
     in.endObject();
     this->calcSize();

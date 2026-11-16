@@ -196,7 +196,12 @@ void SaveHandler::visitLayer(XmlNode* page, const Layer* l) {
             auto* image = new XmlImageNode("image");
             layer->addChild(image);
 
-            image->setImage(i->getImage());
+            if (i->isGif() && i->hasData()) {
+                // keep the GIF itself, so an animated GIF stays animated (older versions show its first frame)
+                image->setRawData(std::string(reinterpret_cast<const char*>(i->getRawData()), i->getRawDataLength()));
+            } else {
+                image->setImage(i->getImage());
+            }
 
             image->setAttrib("left", i->getX());
             image->setAttrib("top", i->getY());

@@ -1,5 +1,7 @@
 #include "XmlImageNode.h"
 
+#include <utility>  // for move
+
 #include <glib.h>  // for g_base64_encode, g_free, gchar, g_e...
 
 #include "control/xml/XmlNode.h"  // for XmlNode
@@ -24,6 +26,8 @@ void XmlImageNode::setImage(cairo_surface_t* img) {
     this->img = cairo_surface_reference(img);
 }
 
+void XmlImageNode::setRawData(std::string data) { this->rawData = std::move(data); }
+
 auto XmlImageNode::pngWriteFunction(XmlImageNode* image, const unsigned char* data, unsigned int length)
         -> cairo_status_t {
     for (unsigned int i = 0; i < length; i++, image->pos++) {
@@ -46,7 +50,12 @@ void XmlImageNode::writeOut(OutputStream* out) {
 
     out->write(">");
 
-    if (this->img == nullptr) {
+    if (!this->rawData.empty()) {
+        gchar* base64_str =
+                g_base64_encode(reinterpret_cast<const guchar*>(this->rawData.data()), this->rawData.size());
+        out->write(base64_str);
+        g_free(base64_str);
+    } else if (this->img == nullptr) {
         g_error("XmlImageNode::writeOut(); this->img == nullptr");
     } else {
         this->out = out;

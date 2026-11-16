@@ -27,6 +27,7 @@
 #include "model/PageRef.h"            // for PageRef
 #include "util/Rectangle.h"           // for Rectangle
 #include "util/raii/CairoWrappers.h"  // for CairoSurfaceSPtr
+#include "util/raii/GSourceURef.h"    // for GSourceURef
 #include "view/Mask.h"                // for Mask
 #include "view/Repaintable.h"         // for Repaintable
 
@@ -311,6 +312,14 @@ private:
 
     DeviceId currentSequenceDeviceId;
 
+
+    /// Animated GIFs: while the page is visible, a timer shows their next frames (started when the page is painted)
+    void scheduleAnimation();
+    static void onAnimationTimer(XojPageView* self);
+    /// Shows the frames due now; returns the milliseconds until the next one (-1: no animated images)
+    int advanceAnimations(bool redraw);
+    /// Declared last: destroyed first, so the timer can't fire on a half-destroyed page view
+    xoj::util::GSourceURef animationTimer;
 
     friend class RenderJob;
     friend class InputHandler;

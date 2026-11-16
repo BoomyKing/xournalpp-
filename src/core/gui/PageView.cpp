@@ -51,6 +51,7 @@
 #include "gui/inputdevices/PositionInputData.h"     // for PositionInputData
 #include "model/Document.h"                         // for Document
 #include "model/Element.h"                          // for Element, ELEMENT_...
+#include "model/Image.h"                            // for Image
 #include "model/Layer.h"                            // for Layer, Layer::Index
 #include "model/LinkDestination.h"                  // for LinkDestination
 #include "model/PageRef.h"                          // for PageRef
@@ -72,6 +73,7 @@
 #include "util/Rectangle.h"                         // for Rectangle
 #include "util/Util.h"                              // for npos
 #include "util/XojMsgBox.h"                         // for XojMsgBox
+#include "util/glib_casts.h"                        // for wrap_for_once_v
 #include "util/gtk4_helper.h"                       // for gtk_box_append
 #include "util/i18n.h"                              // for _F, FC, FS, _
 #include "util/raii/CLibrariesSPtr.h"               // for adopt
@@ -1076,7 +1078,54 @@ auto XojPageView::paintPage(cairo_t* cr, GdkRectangle* rect) -> bool {
         v->draw(cr);
     }
 
+    scheduleAnimation();
     return true;
+}
+
+auto XojPageView::advanceAnimations(bool redraw) -> int {
+    const gint64 now = g_get_monotonic_time();
+    int delay = -1;
+    for (const Layer* layer: this->page->getLayersView()) {
+        if (!layer->isVisible()) {
+            continue;
+        }
+        for (const Element* e: layer->getElementsView()) {
+            if (e->getType() != ELEMENT_IMAGE) {
+                continue;
+            }
+            const auto* img = static_cast<const Image*>(e);
+            if (!img->isAnimated()) {
+                continue;
+            }
+            if (redraw && img->advanceAnimation(now)) {
+                rerenderRect(img->getX(), img->getY(), img->getElementWidth(), img->getElementHeight());
+            }
+            const int d = img->msUntilNextFrame(now);
+            delay = delay < 0 ? d : std::min(delay, d);
+        }
+    }
+    return delay;
+}
+
+void XojPageView::scheduleAnimation() {
+    if (this->animationTimer) {
+        return;
+    }
+    if (const int delay = advanceAnimations(false); delay >= 0) {
+        this->animationTimer =
+                g_timeout_add(static_cast<guint>(delay), xoj::util::wrap_for_once_v<onAnimationTimer>, this);
+    }
+}
+
+void XojPageView::onAnimationTimer(XojPageView* self) {
+    self->animationTimer.consume();
+    if (!self->isVisible()) {
+        return;  // starts again when the page is painted
+    }
+    if (const int delay = self->advanceAnimations(true); delay >= 0) {
+        self->animationTimer =
+                g_timeout_add(static_cast<guint>(delay), xoj::util::wrap_for_once_v<onAnimationTimer>, self);
+    }
 }
 
 /**

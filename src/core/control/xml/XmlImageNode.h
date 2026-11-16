@@ -11,6 +11,8 @@
 
 #pragma once
 
+#include <string>  // for string
+
 #include <cairo.h>  // for cairo_surface_t, cairo_status_t
 
 #include "XmlNode.h"  // for XmlNode
@@ -25,12 +27,16 @@ public:
 public:
     void setImage(cairo_surface_t* img);
 
+    /// Save these bytes as they are instead of a PNG of a rendered image (used for GIFs, to keep their animation)
+    void setRawData(std::string data);
+
     static cairo_status_t pngWriteFunction(XmlImageNode* image, const unsigned char* data, unsigned int length);
 
     void writeOut(OutputStream* out) override;
 
 private:
     cairo_surface_t* img;
+    std::string rawData;
 
     OutputStream* out;
     unsigned int pos;

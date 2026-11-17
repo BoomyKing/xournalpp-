@@ -258,6 +258,7 @@ auto FavoritePenToolItem::createItem(bool) -> xoj::util::WidgetSPtr {
                      }),
                      this);
     g_signal_connect(btn, "button-press-event", G_CALLBACK(onButtonPress), this);
+    g_signal_connect(btn, "button-release-event", G_CALLBACK(onButtonRelease), this);
 
     GtkGesture* longPress = gtk_gesture_long_press_new(btn);
     gtk_event_controller_set_propagation_phase(GTK_EVENT_CONTROLLER(longPress), GTK_PHASE_CAPTURE);
@@ -274,7 +275,11 @@ auto FavoritePenToolItem::createItem(bool) -> xoj::util::WidgetSPtr {
 }
 
 void FavoritePenToolItem::onButtonDestroyed(gpointer self, GObject* button) {
-    auto& v = static_cast<FavoritePenToolItem*>(self)->buttons;
+    auto* item = static_cast<FavoritePenToolItem*>(self);
+    if (item->menuPendingButton == reinterpret_cast<GtkWidget*>(button)) {
+        item->menuPendingButton = nullptr;
+    }
+    auto& v = item->buttons;
     v.erase(std::remove(v.begin(), v.end(), reinterpret_cast<GtkWidget*>(button)), v.end());
 }
 
@@ -316,9 +321,28 @@ auto FavoritePenToolItem::onButtonPress(GtkWidget* button, GdkEventButton* event
 }
 
 void FavoritePenToolItem::onLongPress(GtkGestureLongPress* gesture, gdouble, gdouble, FavoritePenToolItem* self) {
-    GtkWidget* button = gtk_event_controller_get_widget(GTK_EVENT_CONTROLLER(gesture));
     self->suppressNextClick = true;
-    self->showMenu(button);
+    self->menuPendingButton = gtk_event_controller_get_widget(GTK_EVENT_CONTROLLER(gesture));
+    self->showInfo(self->menuPendingButton, false);
+}
+
+auto FavoritePenToolItem::onButtonRelease(GtkWidget* button, GdkEventButton*, FavoritePenToolItem* self) -> gboolean {
+    if (self->menuPendingButton == button) {
+        self->menuPendingButton = nullptr;
+        // open the menu once the release has been handled
+        g_object_set_data(G_OBJECT(button), "favorite-item", self);
+        g_idle_add(
+                +[](gpointer b) -> gboolean {
+                    auto* item = static_cast<FavoritePenToolItem*>(g_object_get_data(G_OBJECT(b), "favorite-item"));
+                    if (item) {
+                        item->showMenu(GTK_WIDGET(b));
+                    }
+                    g_object_unref(b);
+                    return G_SOURCE_REMOVE;
+                },
+                g_object_ref(button));
+    }
+    return false;
 }
 
 void FavoritePenToolItem::saveCurrent() {

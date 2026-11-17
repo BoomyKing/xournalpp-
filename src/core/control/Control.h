@@ -71,6 +71,8 @@ class XojPdfRectangle;
 class Callback;
 class ActionDatabase;
 
+class Image;
+
 class Control:
         public ToolListener,
         public DocumentHandler,
@@ -359,6 +361,9 @@ public:
     void clipboardPasteEnabled(bool enabled) override;
     void clipboardPasteText(std::string text) override;
     void clipboardPasteImage(GdkPixbuf* img) override;
+    /// Pastes an image from its file contents, keeping them as they are (so that animated GIFs stay animated).
+    /// Returns false if the data is not a readable image.
+    bool clipboardPasteImageData(std::string data);
     void clipboardPasteXournal(ObjectInputStream& in) override;
     void deleteSelection() override;
 
@@ -393,6 +398,10 @@ protected:
     static bool loadMetadataCallback(MetadataCallbackData* data);
 
     void saveImpl(bool saveAs, std::function<void(bool)> callback);
+
+private:
+    /// Pastes an image, scaled down to fit 3/4 of the page if needed
+    void pasteImageScaled(std::unique_ptr<Image> image, int pixelWidth, int pixelHeight);
 
 private:
     /**

@@ -2244,11 +2244,28 @@ void Control::clipboardPasteImage(GdkPixbuf* img) {
     xoj::util::GObjectSPtr<GdkPixbuf> pixbuf(gdk_pixbuf_apply_embedded_orientation(img), xoj::util::adopt);
 
     image->setImage(pixbuf.get());
+    pasteImageScaled(std::move(image), gdk_pixbuf_get_width(pixbuf.get()), gdk_pixbuf_get_height(pixbuf.get()));
+}
 
+auto Control::clipboardPasteImageData(std::string data) -> bool {
+    auto image = std::make_unique<Image>();
+    image->setImage(std::move(data));
+    if (image->renderBuffer().has_value()) {
+        return false;  // not an image GdkPixbuf can read
+    }
+    auto [width, height] = image->getImageSize();
+    if (width <= 0 || height <= 0) {
+        return false;
+    }
+    pasteImageScaled(std::move(image), width, height);
+    return true;
+}
+
+void Control::pasteImageScaled(std::unique_ptr<Image> image, int pixelWidth, int pixelHeight) {
     auto zoom100 = this->getZoomControl()->getZoom100Value();
 
-    auto width = static_cast<double>(gdk_pixbuf_get_width(pixbuf.get())) / zoom100;
-    auto height = static_cast<double>(gdk_pixbuf_get_height(pixbuf.get())) / zoom100;
+    auto width = static_cast<double>(pixelWidth) / zoom100;
+    auto height = static_cast<double>(pixelHeight) / zoom100;
 
     auto pageNr = getCurrentPageNo();
     if (pageNr == npos) {

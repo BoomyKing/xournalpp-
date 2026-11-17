@@ -69,10 +69,14 @@ private:
     static void onClicked(GtkButton* button, FavoritePenToolItem* self);
     static gboolean onButtonPress(GtkWidget* button, GdkEventButton* event, FavoritePenToolItem* self);
     static void onLongPress(GtkGestureLongPress* gesture, gdouble x, gdouble y, FavoritePenToolItem* self);
+    static gboolean onButtonRelease(GtkWidget* button, GdkEventButton* event, FavoritePenToolItem* self);
     static void onButtonDestroyed(gpointer self, GObject* button);
 
     Control* control;
     size_t slot;
     std::vector<GtkWidget*> buttons;  ///< Buttons created for this slot (not owned)
     bool suppressNextClick = false;   ///< A long press opened the menu: ignore the click that follows
+    /// The button held down long enough for the menu: it opens once the pen is lifted (if it opened while the pen was
+    /// still down, lifting the pen would close it again)
+    GtkWidget* menuPendingButton = nullptr;
 };

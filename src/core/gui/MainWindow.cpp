@@ -1,6 +1,7 @@
 #include "MainWindow.h"
 
 #include <regex>
+#include <string_view>  // for string_view
 
 #include <gdk-pixbuf/gdk-pixbuf.h>  // for gdk_pixbuf_new_fr...
 #include <gdk/gdk.h>                // for gdk_screen_get_de...
@@ -357,6 +358,20 @@ void MainWindow::dragDataRecived(GtkWidget* widget, GdkDragContext* dragContext,
         return;
     }
 
+    // A GIF dropped as raw data is inserted as it is, so that it stays animated
+    if (gchar* type = gdk_atom_name(gtk_selection_data_get_data_type(data))) {
+        const bool gif = g_ascii_strcasecmp(type, "image/gif") == 0;
+        g_free(type);
+        gint length = 0;
+        const guchar* bytes = gtk_selection_data_get_data_with_length(data, &length);
+        if (gif && bytes && length > 0 &&
+            win->control->clipboardPasteImageData(
+                    std::string(reinterpret_cast<const char*>(bytes), static_cast<size_t>(length)))) {
+            gtk_drag_finish(dragContext, true, false, time);
+            return;
+        }
+    }
+
     xoj::util::GObjectSPtr<GdkPixbuf> image(gtk_selection_data_get_pixbuf(data), xoj::util::adopt);
     if (image) {
         win->control->clipboardPasteImage(image.get());
@@ -374,6 +389,25 @@ void MainWindow::dragDataRecived(GtkWidget* widget, GdkDragContext* dragContext,
             auto cancelTimeout = g_timeout_add(3000, xoj::util::wrap_for_once_v<cancellable_cancel>, cancel);
 
             xoj::util::GObjectSPtr<GFile> file(g_file_new_for_uri(uri), xoj::util::adopt);
+
+            // A dropped GIF file is inserted as it is, so that it stays animated
+            {
+                char* contents = nullptr;
+                gsize length = 0;
+                if (g_file_load_contents(file.get(), cancel, &contents, &length, nullptr, nullptr)) {
+                    const bool gif = length > 6 && std::string_view(contents, 4) == "GIF8";
+                    const bool inserted = gif && win->control->clipboardPasteImageData(std::string(contents, length));
+                    g_free(contents);
+                    if (inserted) {
+                        if (!g_cancellable_is_cancelled(cancel)) {
+                            g_source_remove(cancelTimeout);
+                        }
+                        g_object_unref(cancel);
+                        continue;
+                    }
+                }
+            }
+
             GError* err = nullptr;
             GFileInputStream* in = g_file_read(file.get(), cancel, &err);
             if (g_cancellable_is_cancelled(cancel)) {

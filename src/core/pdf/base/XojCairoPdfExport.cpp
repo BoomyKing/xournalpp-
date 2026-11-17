@@ -139,6 +139,34 @@ bool XojCairoPdfExport::endPdf() {
 void XojCairoPdfExport::exportPage(size_t page, bool exportPdfBackground) {
     PageRef p = doc->getPage(page);
 
+    if (p->isEndless()) {
+        // long endless pages go on several sheets
+        const double sheetHeight = std::min(p->getHeight(), p->getSheetHeight());
+        for (const auto& [top, bottom]: p->getSheets()) {
+            cairo_pdf_surface_set_size(this->surface, p->getWidth(), sheetHeight);
+            cairo_save(this->cr);
+            cairo_rectangle(this->cr, 0, 0, p->getWidth(), bottom - top);
+            cairo_clip(this->cr);
+            cairo_translate(this->cr, 0, -top);
+
+            DocumentView view;
+            xoj::view::BackgroundFlags flags;
+            flags.showPDF = xoj::view::HIDE_PDF_BACKGROUND;
+            flags.showImage = exportBackground == EXPORT_BACKGROUND_NONE ? xoj::view::HIDE_IMAGE_BACKGROUND :
+                                                                           xoj::view::SHOW_IMAGE_BACKGROUND;
+            flags.showRuling = exportBackground <= EXPORT_BACKGROUND_UNRULED ? xoj::view::HIDE_RULING_BACKGROUND :
+                                                                               xoj::view::SHOW_RULING_BACKGROUND;
+            if (layerRange) {
+                view.drawLayersOfPage(*layerRange, p, this->cr, true /* dont render eraseable */, flags);
+            } else {
+                view.drawPage(p, this->cr, true /* dont render eraseable */, flags);
+            }
+            cairo_show_page(this->cr);
+            cairo_restore(this->cr);
+        }
+        return;
+    }
+
     cairo_pdf_surface_set_size(this->surface, p->getWidth(), p->getHeight());
 
     DocumentView view;

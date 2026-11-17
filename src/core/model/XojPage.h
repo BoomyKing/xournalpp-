@@ -14,7 +14,8 @@
 #include <cstddef>   // for size_t
 #include <optional>  // for optional
 #include <string>    // for string
-#include <vector>    // for vector
+#include <utility>
+#include <vector>  // for vector
 
 #include "util/Color.h"  // for Color
 #include "util/PointerContainerView.h"
@@ -63,6 +64,13 @@ public:
     bool isEndless() const;
     double getSheetHeight() const;
     void setSheetHeight(double sheetHeight);
+
+    /**
+     * How to print or export the page on sheets: (top, bottom) of each part of the page that goes on one sheet.
+     * A normal page is one sheet. A long endless page is cut into parts at most one sheet high, cutting in gaps
+     * between elements when possible (so that handwriting is not cut through); empty space at its end is left out.
+     */
+    std::vector<std::pair<double, double>> getSheets() const;
 
     size_t getPdfPageNr() const;
 

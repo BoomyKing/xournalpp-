@@ -3,6 +3,7 @@
 #include <algorithm>  // for find, transform
 #include <iterator>   // for back_insert_iterator, back_inserter, begin
 #include <utility>    // for move
+#include <vector>
 
 #include "model/Layer.h"     // for Layer, Layer::Index
 #include "model/PageType.h"  // for PageType, PageTypeFormat, PageTypeForma...
@@ -45,6 +46,56 @@ auto XojPage::isEndless() const -> bool { return this->sheetHeight > 0; }
 auto XojPage::getSheetHeight() const -> double { return this->sheetHeight; }
 
 void XojPage::setSheetHeight(double sheetHeight) { this->sheetHeight = std::max(0.0, sheetHeight); }
+
+auto XojPage::getSheets() const -> std::vector<std::pair<double, double>> {
+    const double sheet = this->sheetHeight;
+    if (!isEndless() || this->height <= sheet * 1.001) {
+        return {{0.0, this->height}};
+    }
+    // vertical extents of everything on the page
+    constexpr double PADDING = 1.0;
+    std::vector<std::pair<double, double>> extents;
+    for (const Layer* l: this->layer) {
+        for (const Element* e: l->getElementsView()) {
+            extents.emplace_back(e->getY() - PADDING, e->getY() + e->getElementHeight() + PADDING);
+        }
+    }
+    double contentBottom = 0;
+    for (const auto& [top, bottom]: extents) {
+        contentBottom = std::max(contentBottom, bottom);
+    }
+    const double end = std::clamp(contentBottom, std::min(sheet, this->height), this->height);
+
+    std::vector<std::pair<double, double>> sheets;
+    double top = 0;
+    while (end - top > 0.5) {
+        double cut = top + sheet;
+        if (cut >= end) {
+            sheets.emplace_back(top, end);
+            break;
+        }
+        // move the cut up out of any element it would go through, but not by more than half a sheet
+        bool moved = true;
+        while (moved && cut > top + sheet / 2) {
+            moved = false;
+            for (const auto& [eTop, eBottom]: extents) {
+                if (eTop < cut && cut < eBottom && eBottom - eTop < sheet) {
+                    cut = eTop;
+                    moved = true;
+                }
+            }
+        }
+        if (cut <= top + sheet / 2) {
+            cut = top + sheet;  // no gap: cut through
+        }
+        sheets.emplace_back(top, cut);
+        top = cut;
+    }
+    if (sheets.empty()) {
+        sheets.emplace_back(0.0, std::min(sheet, this->height));
+    }
+    return sheets;
+}
 
 void XojPage::addLayer(Layer* layer) {
     this->layer.push_back(layer);

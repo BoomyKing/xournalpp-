@@ -1,8 +1,10 @@
 #include "PrintHandler.h"
 
-#include <cmath>   // for M_PI_2
-#include <memory>  // for __shared_ptr_access
-#include <string>  // for string
+#include <algorithm>  // for min
+#include <cmath>      // for M_PI_2
+#include <memory>     // for __shared_ptr_access
+#include <string>     // for string
+#include <vector>     // for vector
 
 #include <cairo.h>        // for cairo_rotate, cairo_translate, cairo_t
 #include <config-dev.h>   // for PRINT_CONFIG_FILE
@@ -25,16 +27,32 @@
 #include "filesystem.h"  // for exists, remove, path
 
 namespace {
-void drawPage(GtkPrintOperation* /*operation*/, GtkPrintContext* context, int pageNr, Document* doc) {
-    cairo_t* cr = gtk_print_context_get_cairo_context(context);
+/// One printed sheet: a page, or for a long endless page a part of it
+struct PrintSheet {
+    size_t page;
+    double top;
+    double bottom;
+};
+struct PrintJob {
+    Document* doc;
+    std::vector<PrintSheet> sheets;
+};
 
-    PageRef page = doc->getPage(static_cast<size_t>(pageNr));
+void drawPage(GtkPrintOperation* /*operation*/, GtkPrintContext* context, int sheetNr, PrintJob* job) {
+    cairo_t* cr = gtk_print_context_get_cairo_context(context);
+    if (sheetNr < 0 || static_cast<size_t>(sheetNr) >= job->sheets.size()) {
+        return;
+    }
+    const PrintSheet& sheet = job->sheets[static_cast<size_t>(sheetNr)];
+    Document* doc = job->doc;
+
+    PageRef page = doc->getPage(sheet.page);
     if (!page) {
         return;
     }
 
     double width = page->getWidth();
-    double height = page->getHeight();
+    double height = page->isEndless() ? std::min(page->getHeight(), page->getSheetHeight()) : page->getHeight();
 
     if (width > height) {
         cairo_rotate(cr, M_PI_2);
@@ -52,19 +70,26 @@ void drawPage(GtkPrintOperation* /*operation*/, GtkPrintContext* context, int pa
     xoj::view::BackgroundFlags flags = xoj::view::BACKGROUND_SHOW_ALL;
     flags.showPDF = xoj::view::HIDE_PDF_BACKGROUND;  // Already printed (if any)
 
+    cairo_rectangle(cr, 0, 0, width, sheet.bottom - sheet.top);
+    cairo_clip(cr);
+    cairo_translate(cr, 0, -sheet.top);
+
     DocumentView view;
     view.drawPage(page, cr, true /* dont render eraseable */, flags);
 }
 
-void requestPageSetup(GtkPrintOperation* /*op*/, GtkPrintContext* /*ctx*/, int pageNr, GtkPageSetup* setup,
-                      Document* doc) {
-    PageRef page = doc->getPage(static_cast<size_t>(pageNr));  // Can't be negative
+void requestPageSetup(GtkPrintOperation* /*op*/, GtkPrintContext* /*ctx*/, int sheetNr, GtkPageSetup* setup,
+                      PrintJob* job) {
+    if (sheetNr < 0 || static_cast<size_t>(sheetNr) >= job->sheets.size()) {
+        return;
+    }
+    PageRef page = job->doc->getPage(job->sheets[static_cast<size_t>(sheetNr)].page);
     if (!page) {
         return;
     }
 
     double width = page->getWidth();
-    double height = page->getHeight();
+    double height = page->isEndless() ? std::min(page->getHeight(), page->getSheetHeight()) : page->getHeight();
 
     if (width > height) {
         gtk_page_setup_set_orientation(setup, GTK_PAGE_ORIENTATION_LANDSCAPE);
@@ -100,15 +125,26 @@ void PrintHandler::print(Document* doc, size_t currentPage, GtkWindow* parent) {
         settings = gtk_print_settings_new();
     }
 
+    PrintJob job{doc, {}};
+    int currentSheet = 0;
+    for (size_t i = 0; i < doc->getPageCount(); i++) {
+        if (i == currentPage) {
+            currentSheet = static_cast<int>(job.sheets.size());
+        }
+        for (const auto& [top, bottom]: doc->getPage(i)->getSheets()) {
+            job.sheets.push_back({i, top, bottom});
+        }
+    }
+
     GtkPrintOperation* op = gtk_print_operation_new();
     gtk_print_operation_set_print_settings(op, settings);
-    gtk_print_operation_set_n_pages(op, strict_cast<int>(doc->getPageCount()));
-    gtk_print_operation_set_current_page(op, strict_cast<int>(currentPage));
+    gtk_print_operation_set_n_pages(op, strict_cast<int>(job.sheets.size()));
+    gtk_print_operation_set_current_page(op, currentSheet);
     gtk_print_operation_set_job_name(op, "Xournal++");
     gtk_print_operation_set_unit(op, GTK_UNIT_POINTS);
     gtk_print_operation_set_use_full_page(op, true);
-    g_signal_connect(op, "draw_page", G_CALLBACK(drawPage), doc);
-    g_signal_connect(op, "request-page-setup", G_CALLBACK(requestPageSetup), doc);
+    g_signal_connect(op, "draw_page", G_CALLBACK(drawPage), &job);
+    g_signal_connect(op, "request-page-setup", G_CALLBACK(requestPageSetup), &job);
 
     GError* error{};
     GtkPrintOperationResult res = gtk_print_operation_run(op, GTK_PRINT_OPERATION_ACTION_PRINT_DIALOG, parent, &error);

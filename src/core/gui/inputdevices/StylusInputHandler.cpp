@@ -194,9 +194,18 @@ void StylusInputHandler::setPressedState(InputEvent const& event) {
                 break;
             case 2:
                 this->modifier2 = true;
+                // With "emulate stylus tip contact on button press", a stylus button press counts as touching the
+                // screen (e.g. so that the hand tool set for a stylus button scrolls while the button is held)
+                if (this->inputContext->getSettings()->getInputSystemTPCButtonEnabled()) {
+                    this->deviceClassPressed = true;
+                }
                 break;
             case 3:
                 this->modifier3 = true;
+                if (this->inputContext->getSettings()->getInputSystemTPCButtonEnabled()) {
+                    this->deviceClassPressed = true;
+                }
+                break;
             default:
                 break;
         }

@@ -238,6 +238,8 @@ void Settings::loadDefault() {
     this->strokeHoldRecognizerEnabled = false;
     this->scratchOutEnabled = false;
     this->favoritePens = "";
+    this->stylusButton1TapToolbox = false;
+    this->stylusButton2TapToolbox = false;
     this->strokeHoldRecognizerDelay = 600;
     this->restoreLineWidthEnabled = false;
 
@@ -694,6 +696,10 @@ void Settings::parseItem(xmlDocPtr doc, xmlNodePtr cur) {
         this->snapRecognizedShapesEnabled = xmlStrcmp(value, reinterpret_cast<const xmlChar*>("true")) == 0;
     } else if (xmlStrcmp(name, reinterpret_cast<const xmlChar*>("scratchOutEnabled")) == 0) {
         this->scratchOutEnabled = xmlStrcmp(value, reinterpret_cast<const xmlChar*>("true")) == 0;
+    } else if (xmlStrcmp(name, reinterpret_cast<const xmlChar*>("stylusButton1TapToolbox")) == 0) {
+        this->stylusButton1TapToolbox = xmlStrcmp(value, reinterpret_cast<const xmlChar*>("true")) == 0;
+    } else if (xmlStrcmp(name, reinterpret_cast<const xmlChar*>("stylusButton2TapToolbox")) == 0) {
+        this->stylusButton2TapToolbox = xmlStrcmp(value, reinterpret_cast<const xmlChar*>("true")) == 0;
     } else if (xmlStrcmp(name, reinterpret_cast<const xmlChar*>("favoritePens")) == 0) {
         this->favoritePens = reinterpret_cast<const char*>(value);
     } else if (xmlStrcmp(name, reinterpret_cast<const xmlChar*>("strokeHoldRecognizerEnabled")) == 0) {
@@ -1185,6 +1191,8 @@ void Settings::save() {
     SAVE_BOOL_PROP(strokeHoldRecognizerEnabled);
     SAVE_BOOL_PROP(scratchOutEnabled);
     SAVE_STRING_PROP(favoritePens);
+    SAVE_BOOL_PROP(stylusButton1TapToolbox);
+    SAVE_BOOL_PROP(stylusButton2TapToolbox);
     SAVE_UINT_PROP(strokeHoldRecognizerDelay);
     SAVE_BOOL_PROP(restoreLineWidthEnabled);
 
@@ -2346,6 +2354,19 @@ auto Settings::getStrokeHoldRecognizerEnabled() const -> bool { return this->str
 void Settings::setScratchOutEnabled(bool enabled) { this->scratchOutEnabled = enabled; }
 
 auto Settings::getScratchOutEnabled() const -> bool { return this->scratchOutEnabled; }
+
+auto Settings::getStylusButtonTapToolbox(size_t index) const -> bool {
+    return index == 0 ? this->stylusButton1TapToolbox : this->stylusButton2TapToolbox;
+}
+
+void Settings::setStylusButtonTapToolbox(size_t index, bool enabled) {
+    bool& setting = index == 0 ? this->stylusButton1TapToolbox : this->stylusButton2TapToolbox;
+    if (setting == enabled) {
+        return;
+    }
+    setting = enabled;
+    save();
+}
 
 auto Settings::getFavoritePens() const -> const std::string& { return this->favoritePens; }
 

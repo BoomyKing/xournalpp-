@@ -46,4 +46,22 @@ private:
     int eventsToIgnore = -1;
 
     void setPressedState(InputEvent const& event);
+
+    bool handleEvent(InputEvent const& event);
+
+    /**
+     * Tap or hold: a stylus button set to open the floating toolbox on a quick tap still works as configured while it
+     * is held (e.g. as the hand tool for scrolling). Returns true on the release of such a quick tap.
+     */
+    bool isButtonTap(InputEvent const& event);
+
+    struct ButtonTap {
+        guint button = 0;  ///< 0 when no tap is under way
+        guint32 time = 0;
+        double x = 0, y = 0;
+    } buttonTap;
+
+    /// A press shorter than this (ms) without moving further than this (screen pixels) is a tap
+    static constexpr guint32 BUTTON_TAP_MAX_TIME = 350;
+    static constexpr double BUTTON_TAP_MAX_DISTANCE = 10;
 };

@@ -547,6 +547,11 @@ public:
     void setScratchOutEnabled(bool enabled);
     bool getScratchOutEnabled() const;
 
+    /// Whether a quick tap of stylus button 1 (index 0) or 2 (index 1) opens the floating toolbox (holding it still
+    /// uses the tool set for the button)
+    bool getStylusButtonTapToolbox(size_t index) const;
+    void setStylusButtonTapToolbox(size_t index, bool enabled);
+
     /// Favourite pens, see FavoritePens.h
     const std::string& getFavoritePens() const;
     void setFavoritePens(const std::string& favorites);
@@ -1137,6 +1142,8 @@ private:
     bool snapRecognizedShapesEnabled{};
     bool strokeHoldRecognizerEnabled{};        ///< Hold the pen still to recognize the stroke as a shape
     bool scratchOutEnabled{};                  ///< Scribble over strokes to erase them
+    bool stylusButton1TapToolbox{};
+    bool stylusButton2TapToolbox{};
     std::string favoritePens;                  ///< Saved favourite pens (see FavoritePens.h)
     unsigned int strokeHoldRecognizerDelay{};  ///< in ms
 

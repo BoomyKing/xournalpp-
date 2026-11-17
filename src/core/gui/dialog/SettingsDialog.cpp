@@ -219,6 +219,19 @@ void SettingsDialog::initMouseButtonEvents(GladeSearchpath* gladeSearchPath) {
     emplaceButton("hboxTouch", BUTTON_TOUCH, true);
     emplaceButton("hboxPenButton1", BUTTON_STYLUS_ONE);
     emplaceButton("hboxPenButton2", BUTTON_STYLUS_TWO);
+
+    // Tap or hold: a quick tap of a stylus button can open the floating toolbox, while holding it uses its tool
+    const char* boxes[2] = {"hboxPenButton1", "hboxPenButton2"};
+    for (size_t i = 0; i < 2; i++) {
+        GtkWidget* cb = gtk_check_button_new_with_label(_("Tap: Floating Toolbox"));
+        gtk_widget_set_tooltip_text(cb, _("A quick tap of the button opens the floating toolbox. Holding the button "
+                                          "(e.g. to scroll with the hand tool) still uses the tool chosen here."));
+        gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(cb), settings->getStylusButtonTapToolbox(i));
+        gtk_widget_set_margin_start(cb, 12);
+        gtk_box_pack_end(GTK_BOX(builder.get(boxes[i])), cb, false, false, 0);
+        gtk_widget_show(cb);
+        this->tapToolboxCheck[i] = cb;
+    }
     emplaceButton("hboxDefaultTool", BUTTON_DEFAULT);
 }
 
@@ -744,6 +757,13 @@ void SettingsDialog::load() {
 
 void SettingsDialog::save() {
     settings->transactionStart();
+
+    for (size_t i = 0; i < 2; i++) {
+        if (this->tapToolboxCheck[i]) {
+            settings->setStylusButtonTapToolbox(
+                    i, gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(this->tapToolboxCheck[i])));
+        }
+    }
 
     settings->setPressureSensitivity(getCheckbox("cbSettingPresureSensitivity"));
     settings->setMinimumPressure(getSlider("scaleMinimumPressure"));

@@ -28,6 +28,49 @@ StylusInputHandler::StylusInputHandler(InputContext* inputContext): PenInputHand
 StylusInputHandler::~StylusInputHandler() = default;
 
 auto StylusInputHandler::handleImpl(InputEvent const& event) -> bool {
+    const bool tap = isButtonTap(event);
+    const bool handled = handleEvent(event);
+    if (tap) {
+        if (XojPageView* page = getPageAtCurrentPosition(event)) {
+            page->showFloatingToolbox(getInputDataRelativeToCurrentPage(page, event));
+        }
+    }
+    return handled;
+}
+
+auto StylusInputHandler::isButtonTap(InputEvent const& event) -> bool {
+    if (event.deviceClass != INPUT_DEVICE_PEN) {
+        return false;
+    }
+    Settings* settings = this->inputContext->getSettings();
+    if (event.type == BUTTON_PRESS_EVENT && (event.button == 2 || event.button == 3)) {
+        const size_t index = event.button == 2 ? 0 : 1;  // stylus button 1 or 2
+        if (settings->getStylusButtonTapToolbox(index)) {
+            this->buttonTap = {event.button, event.timestamp, event.absolute.x, event.absolute.y};
+        } else {
+            this->buttonTap.button = 0;
+        }
+        return false;
+    }
+    if (this->buttonTap.button == 0) {
+        return false;
+    }
+    if (event.type == MOTION_EVENT) {
+        if (std::hypot(event.absolute.x - this->buttonTap.x, event.absolute.y - this->buttonTap.y) >
+            BUTTON_TAP_MAX_DISTANCE) {
+            this->buttonTap.button = 0;  // dragging (e.g. scrolling with the hand tool)
+        }
+        return false;
+    }
+    if (event.type == BUTTON_RELEASE_EVENT && event.button == this->buttonTap.button) {
+        const bool quick = event.timestamp - this->buttonTap.time <= BUTTON_TAP_MAX_TIME;
+        this->buttonTap.button = 0;
+        return quick;
+    }
+    return false;
+}
+
+auto StylusInputHandler::handleEvent(InputEvent const& event) -> bool {
     // Only handle events when there is no active gesture
     GtkXournal* xournal = inputContext->getXournal();
 

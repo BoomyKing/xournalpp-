@@ -66,18 +66,38 @@ void RenderJob::run() {
     bool rerenderComplete = std::exchange(this->view->rerenderComplete, false);
     bool sizeChanged = std::exchange(this->view->sizeChanged, false);
     auto rerenderRects = std::move(this->view->rerenderRects);
+    Range window = std::exchange(this->view->pendingRenderWindow, Range());
 
     this->view->repaintRectMutex.unlock();
 
     if (rerenderComplete) {
-        xoj::view::Mask newMask(view->xournal->getDpiScaleFactor(),
-                                Range(0, 0, view->page->getWidth(), view->page->getHeight()), view->xournal->getZoom(),
+        const Range whole(0, 0, view->page->getWidth(), view->page->getHeight());
+        if (!window.isValid() || window.empty()) {
+            // Not decided by the UI thread: keep drawing the part drawn before, if it was only a part
+            std::lock_guard lock(this->view->drawingMutex);
+            window = this->view->bufferRange;
+        }
+        if (!window.isValid() || window.empty()) {
+            // Nothing known yet: draw the whole page, or the top of a tall one (the right part is drawn once the page
+            // is painted, see XojPageView::bufferNeedsRecentering)
+            const double zoom = view->xournal->getZoom();
+            window = whole;
+            if (whole.getHeight() * zoom > XojPageView::MAX_WHOLE_PAGE_RENDER_HEIGHT) {
+                window.maxY = XojPageView::MAX_WHOLE_PAGE_RENDER_HEIGHT / zoom;
+            }
+        }
+        window = window.intersect(whole);
+        if (!window.isValid() || window.empty()) {
+            window = whole;
+        }
+        xoj::view::Mask newMask(view->xournal->getDpiScaleFactor(), window, view->xournal->getZoom(),
                                 CAIRO_CONTENT_COLOR_ALPHA);
 
         renderToBuffer(newMask.get());
         {
             std::lock_guard lock(this->view->drawingMutex);
             std::swap(this->view->buffer, newMask);
+            this->view->bufferRange = window;
         }
         if (sizeChanged) {
             // We do not have any control on what portion of the widget needs to be redrawn. Redraw it all.

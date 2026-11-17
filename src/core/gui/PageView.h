@@ -286,6 +286,8 @@ private:
     bool selected = false;
 
     xoj::view::Mask buffer;
+    /// The part of the page drawn in the buffer (guarded by drawingMutex)
+    Range bufferRange;
     std::mutex drawingMutex;
 
     bool inEraser = false;
@@ -304,6 +306,20 @@ private:
     std::vector<xoj::util::Rectangle<double>> rerenderRects;
     bool rerenderComplete = false;
     bool sizeChanged = false;
+    /// The part of the page the pending complete rerender draws (guarded by repaintRectMutex)
+    Range pendingRenderWindow;
+
+    /**
+     * Tall pages are not drawn whole into the buffer, which would take too much memory (or exceed cairo's maximum
+     * surface size): only the visible part and about one screen above and below are. The buffer is drawn again around
+     * the visible part when scrolling gets close to its edge.
+     */
+    /// The part of the page a complete rerender should draw now (call from the UI thread)
+    Range computeRenderWindow() const;
+    /// Whether the buffer no longer covers enough around the visible part (call from the UI thread, drawingMutex held)
+    bool bufferNeedsRecentering() const;
+    /// Pages up to this height (in pixels at the current zoom) are always drawn whole
+    static constexpr double MAX_WHOLE_PAGE_RENDER_HEIGHT = 4096;
 
     int dispX{};  // position on display - set in Layout::layoutPages
     int dispY{};

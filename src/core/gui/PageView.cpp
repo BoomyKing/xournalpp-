@@ -127,6 +127,7 @@ void XojPageView::setIsVisible(bool visible) { this->visible = visible; }
 void XojPageView::deleteViewBuffer() {
     std::lock_guard lock(this->drawingMutex);
     this->buffer.reset();
+    this->bufferRange = Range();
 }
 
 auto XojPageView::containsPoint(int x, int y, bool local) const -> bool {
@@ -815,9 +816,64 @@ auto XojPageView::onKeyReleaseEvent(const KeyEvent& event) -> bool {
 }
 
 void XojPageView::rerenderPage(bool sizeChanged) {
+    {
+        std::lock_guard lock(this->repaintRectMutex);
+        if (g_main_context_is_owner(g_main_context_default())) {
+            this->pendingRenderWindow = computeRenderWindow();
+        } else {
+            this->pendingRenderWindow = Range();  // decided by the render job: whole page or the previous window
+        }
+    }
     this->rerenderComplete = true;
     this->sizeChanged = sizeChanged;
     this->xournal->getControl()->getScheduler()->addRerenderPage(this);
+}
+
+auto XojPageView::computeRenderWindow() const -> Range {
+    const double zoom = xournal->getZoom();
+    const double width = page->getWidth();
+    const double height = page->getHeight();
+    const Range whole(0, 0, width, height);
+    const double screenPx = std::max(1.0, xournal->getLayout()->getVisibleRect().height);
+    if (height * zoom <= std::max(MAX_WHOLE_PAGE_RENDER_HEIGHT, 3 * screenPx)) {
+        return whole;
+    }
+    const double screen = screenPx / zoom;  // a screen's height, in page coordinates
+    double top = 0;
+    double bottom = 0;
+    if (Range vis = getVisiblePart(); vis.isValid() && !vis.empty()) {
+        top = vis.minY - screen;
+        bottom = vis.maxY + screen;
+    } else {
+        // Not visible: prepare the end that will come into view first
+        const bool below = this->getY() > xournal->getLayout()->getVisibleRect().y;
+        top = below ? 0 : height - 3 * screen;
+        bottom = below ? 3 * screen : height;
+    }
+    top = std::clamp(top, 0.0, height);
+    bottom = std::clamp(bottom, top, height);
+    return bottom > top ? Range(0, top, width, bottom) : whole;
+}
+
+auto XojPageView::bufferNeedsRecentering() const -> bool {
+    const double height = page->getHeight();
+    if (!this->bufferRange.isValid()) {
+        return false;
+    }
+    const bool windowed = this->bufferRange.minY > 0 || this->bufferRange.maxY < height;
+    if (!windowed) {
+        // drawn whole: redraw only if the page is too tall for that
+        return height * xournal->getZoom() >
+               std::max(MAX_WHOLE_PAGE_RENDER_HEIGHT,
+                        3.0 * std::max(1.0, xournal->getLayout()->getVisibleRect().height));
+    }
+    Range vis = getVisiblePart();
+    if (!vis.isValid() || vis.empty()) {
+        return false;
+    }
+    const double margin = std::max(1.0, xournal->getLayout()->getVisibleRect().height) / xournal->getZoom() / 3;
+    return (this->bufferRange.minY > 0 && vis.minY - margin < this->bufferRange.minY) ||
+           (this->bufferRange.maxY < height && vis.maxY + margin > this->bufferRange.maxY);
 }
 
 void XojPageView::repaintPage() const { xournal->getRepaintHandler()->repaintPage(this); }
@@ -1063,6 +1119,14 @@ auto XojPageView::paintPage(cairo_t* cr, GdkRectangle* rect) -> bool {
         if (this->buffer.getZoom() != zoom) {
             rerenderPage();
             cairo_pattern_set_filter(cairo_get_source(cr), CAIRO_FILTER_FAST);
+        } else if (!this->rerenderComplete && bufferNeedsRecentering()) {
+            rerenderPage();
+        }
+        if (this->bufferRange.isValid() && (this->bufferRange.minY > 0 || this->bufferRange.maxY < page->getHeight())) {
+            // Only part of a tall page is in the buffer: show blank paper where it is still being drawn
+            cairo_set_source_rgb(cr, 1, 1, 1);
+            cairo_rectangle(cr, 0, 0, page->getWidth(), page->getHeight());
+            cairo_fill(cr);
         }
         this->buffer.paintTo(cr);
     }  // Restore the state of cr and then release the mutex

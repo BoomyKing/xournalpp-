@@ -100,6 +100,7 @@ enum class Action : size_t {
     PAPER_FORMAT,
     PAPER_BACKGROUND_COLOR,
     ENDLESS_PAGES,
+    NEW_PAGE_BELOW,
 
     // Menu Tools
     SELECT_TOOL,

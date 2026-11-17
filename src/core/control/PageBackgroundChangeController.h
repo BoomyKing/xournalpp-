@@ -66,12 +66,13 @@ public:
     void pageDeleted(size_t page) override;
     void pageSelected(size_t page) override;
 
-private:
+public:
     /**
      * Copy the background from source to target
      */
     static void copyBackgroundFromOtherPage(PageRef target, PageRef source);
 
+private:
     /// Asks the user to choose a pdf page, and calls callback
     void askForPdfBackground(std::function<void(size_t)> callback);
 

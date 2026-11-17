@@ -544,6 +544,9 @@ void StrokeHandler::onButtonReleaseEvent(const PositionInputData& pos, double zo
     if (!heldShape && control->getSettings()->getScratchOutEnabled() && scratchOut(layer)) {
         return;  // the scribble erased the strokes under it, and isn't kept itself
     }
+    if (page->isEndless() && control->getSettings()->getLineStartsNewPage() && lineStartsNewPage()) {
+        return;  // the line became a page break
+    }
 
     UndoRedoHandler* undo = control->getUndoRedoHandler();
     undo->addUndoAction(std::make_unique<InsertUndoAction>(page, layer, stroke.get()));
@@ -600,6 +603,59 @@ void StrokeHandler::onButtonReleaseEvent(const PositionInputData& pos, double zo
     this->viewPool->dispatchAndClear(xoj::view::StrokeToolView::FINALIZATION_REQUEST, Range());
 
     page->fireElementChanged(ptr);
+}
+
+auto StrokeHandler::lineStartsNewPage() -> bool {
+    const Stroke* line = (heldShape && isUsableHeldShape()) ? heldShape.get() : stroke.get();
+    const auto& pts = line->getPointVector();
+    if (pts.size() < 2) {
+        return false;
+    }
+    double minX = pts.front().x, maxX = minX, minY = pts.front().y, maxY = minY, length = 0, sumY = 0;
+    for (size_t i = 0; i < pts.size(); i++) {
+        minX = std::min(minX, pts[i].x);
+        maxX = std::max(maxX, pts[i].x);
+        minY = std::min(minY, pts[i].y);
+        maxY = std::max(maxY, pts[i].y);
+        sumY += pts[i].y;
+        if (i > 0) {
+            length += std::hypot(pts[i].x - pts[i - 1].x, pts[i].y - pts[i - 1].y);
+        }
+    }
+    const double width = maxX - minX;
+    // across almost the whole page, level and straight (not a zigzag or an underline)
+    if (width < LINE_BREAK_MIN_WIDTH_PART * page->getWidth() ||
+        maxY - minY > std::max(LINE_BREAK_MAX_TILT, LINE_BREAK_MAX_TILT_PART * width) ||
+        length > LINE_BREAK_MAX_PATH_PART * width) {
+        return false;
+    }
+    const double y = sumY / static_cast<double>(pts.size());
+
+    Range rg(stroke->boundingRect());
+    if (heldShape) {
+        rg = rg.unite(Range(heldShape->boundingRect()));
+        rg.addPadding(heldShape->getWidth());
+        heldShape.reset();
+    }
+    rg.addPadding(stroke->getWidth());
+    this->viewPool->dispatchAndClear(xoj::view::StrokeToolView::CANCELLATION_REQUEST, rg);
+    stroke.reset();
+
+    // split once this input sequence is over (splitting changes the pages the input handlers belong to)
+    struct Split {
+        Control* control;
+        PageRef page;
+        double y;
+    };
+    g_idle_add(
+            +[](gpointer d) -> gboolean {
+                auto* s = static_cast<Split*>(d);
+                s->control->splitPageAt(s->page, s->y);
+                delete s;
+                return G_SOURCE_REMOVE;
+            },
+            new Split{control, page, y});
+    return true;
 }
 
 auto StrokeHandler::scratchOut(Layer* layer) -> bool {

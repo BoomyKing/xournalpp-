@@ -235,7 +235,21 @@ void SettingsDialog::initMouseButtonEvents(GladeSearchpath* gladeSearchPath) {
             gtk_widget_set_margin_start(cb, 12);
             gtk_widget_set_margin_end(cb, 12);
             gtk_widget_set_margin_bottom(cb, 8);
-            gtk_container_add(GTK_CONTAINER(frame), cb);
+            GtkWidget* lineCb =
+                    gtk_check_button_new_with_label(_("A straight line across the whole page starts a new page"));
+            gtk_widget_set_tooltip_text(lineCb, _("On endless pages: draw a straight line from edge to edge (by hand, "
+                                                  "or by holding the pen still at its end) and the page ends there; "
+                                                  "what is below moves to a new page. Undo joins them again."));
+            gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(lineCb), settings->getLineStartsNewPage());
+            gtk_widget_set_margin_start(lineCb, 12);
+            gtk_widget_set_margin_end(lineCb, 12);
+            gtk_widget_set_margin_bottom(lineCb, 8);
+            gtk_widget_set_margin_bottom(cb, 2);
+            GtkWidget* box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
+            gtk_box_pack_start(GTK_BOX(box), cb, false, false, 0);
+            gtk_box_pack_start(GTK_BOX(box), lineCb, false, false, 0);
+            gtk_container_add(GTK_CONTAINER(frame), box);
+            this->lineBreakCheck = lineCb;
             gtk_box_pack_start(GTK_BOX(drawingAreaBox), frame, false, true, 0);
             gint position = 0;
             gtk_container_child_get(GTK_CONTAINER(drawingAreaBox), recognizerFrame, "position", &position, nullptr);
@@ -783,6 +797,9 @@ void SettingsDialog::load() {
 void SettingsDialog::save() {
     settings->transactionStart();
 
+    if (this->lineBreakCheck) {
+        settings->setLineStartsNewPage(gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(this->lineBreakCheck)));
+    }
     if (this->endlessDefaultCheck) {
         settings->setEndlessPagesByDefault(gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(this->endlessDefaultCheck)));
     }

@@ -129,9 +129,17 @@ private:
 
     /// If the stroke is a scribble over strokes, erases them (undoably) and drops the scribble. Returns whether it did.
     bool scratchOut(Layer* layer);
+    /// On endless pages: a straight line across the whole page ends the page there (returns true if it did)
+    bool lineStartsNewPage();
 
     /// Pen movements smaller than this (in screen pixels) still count as holding still
     static constexpr double HOLD_TOLERANCE = 4.0;
+    /// A page-break line spans at least this part of the page width, rises or falls at most this much (pt, or this part
+    /// of its length) and its path is at most this much longer than its width
+    static constexpr double LINE_BREAK_MIN_WIDTH_PART = 0.9;
+    static constexpr double LINE_BREAK_MAX_TILT = 8.0;
+    static constexpr double LINE_BREAK_MAX_TILT_PART = 0.03;
+    static constexpr double LINE_BREAK_MAX_PATH_PART = 1.08;
     /// Rotations smaller than this (in radians) are ignored, so that resizing a held shape does not tilt it
     static constexpr double HELD_SHAPE_ROTATION_DEADZONE = 0.12;
     static constexpr double MIN_HELD_SHAPE_SCALE = 0.05;

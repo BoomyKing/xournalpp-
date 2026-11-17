@@ -89,7 +89,8 @@
 #include "undo/InsertDeletePageUndoAction.h"                     // for Inse...
 #include "undo/InsertUndoAction.h"                               // for Inse...
 #include "undo/MoveSelectionToLayerUndoAction.h"                 // for Move...
-#include "undo/PageSizeChangeUndoAction.h"                       // for PageSizeChangeUndoAction
+#include "undo/PageSizeChangeUndoAction.h"
+#include "undo/SplitPageUndoAction.h"                            // for PageSizeChangeUndoAction
 #include "undo/SwapUndoAction.h"                                 // for SwapUndoAction
 #include "undo/UndoAction.h"                                     // for Undo...
 #include "util/Assert.h"                                         // for xoj_assert
@@ -887,6 +888,43 @@ void Control::setEndlessPages(bool enable) {
         growEndlessPage(page);
     }
     updateWindowTitle();
+}
+
+void Control::newPageBelow() {
+    PageRef page = getCurrentPage();
+    const size_t pageNr = getCurrentPageNo();
+    if (!page || pageNr == npos) {
+        return;
+    }
+    this->doc->lock_shared();
+    double contentBottom = 0;
+    for (const Layer* layer: page->getLayersView()) {
+        for (const Element* e: layer->getElementsView()) {
+            contentBottom = std::max(contentBottom, e->getY() + e->getElementHeight());
+        }
+    }
+    const bool endless = page->isEndless();
+    const double height = page->getHeight();
+    this->doc->unlock_shared();
+
+    if (!endless || contentBottom <= 0) {
+        insertNewPage(pageNr + 1);
+        return;
+    }
+    // end the page a little below the last thing on it
+    splitPageAt(page, std::min(height, contentBottom + 20));
+}
+
+void Control::splitPageAt(const PageRef& page, double y) {
+    clearSelectionEndText();
+    SplitPageUndoAction::splitPage(this, page, y);
+    this->doc->lock_shared();
+    const size_t pageNr = this->doc->indexOf(page);
+    this->doc->unlock_shared();
+    if (pageNr != npos) {
+        scrollHandler->scrollToPage(pageNr + 1);
+        firePageSelected(pageNr + 1);
+    }
 }
 
 void Control::growEndlessPage(const PageRef& page) {

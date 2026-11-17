@@ -365,6 +365,8 @@ void ToolMenuHandler::initToolItems() {
     emplaceCustomItemWithPopover("INSERT_NEW_PAGE", Cat::TOOLS, Action::NEW_PAGE_AFTER, "page-add", _("Insert page"),
                                  this->pageTypeSelectionPopup.get());
     emplaceCustomItem("DELETE_CURRENT_PAGE", Cat::TOOLS, Action::DELETE_PAGE, "page-delete", _("Delete current page"));
+    emplaceCustomItem("NEW_PAGE_BELOW", Cat::TOOLS, Action::NEW_PAGE_BELOW, "page-add",
+                      _("End page here, new page below"));
 
     /*
      * Menu Tool

@@ -564,6 +564,10 @@ struct ActionProperties<Action::ENDLESS_PAGES> {
         ctrl->setEndlessPages(g_variant_get_boolean(p));
     }
 };
+template <>
+struct ActionProperties<Action::NEW_PAGE_BELOW> {
+    static void callback(GSimpleAction*, GVariant*, Control* ctrl) { ctrl->newPageBelow(); }
+};
 
 
 /** Tool menu **/

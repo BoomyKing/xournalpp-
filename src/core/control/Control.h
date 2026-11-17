@@ -242,6 +242,10 @@ public:
     void setEndlessPages(bool enable);
     /// Grows an endless page so that there is room below its content
     void growEndlessPage(const PageRef& page);
+    /// Ends the current page after its content and starts a new page below it
+    void newPageBelow();
+    /// Ends the page at height y; what is below moves to a new page under it (undoable)
+    void splitPageAt(const PageRef& page, double y);
     void appendNewPdfPages();
     void insertPage(const PageRef& page, size_t position, bool shouldScrollToPage = true);
     void deletePage();

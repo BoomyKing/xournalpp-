@@ -551,6 +551,10 @@ public:
     void setEndlessPagesByDefault(bool enabled);
     bool getEndlessPagesByDefault() const;
 
+    /// Whether a straight line across (almost) the whole width of an endless page starts a new page there
+    void setLineStartsNewPage(bool enabled);
+    bool getLineStartsNewPage() const;
+
     /// Whether a quick tap of stylus button 1 (index 0) or 2 (index 1) opens the floating toolbox (holding it still
     /// uses the tool set for the button)
     bool getStylusButtonTapToolbox(size_t index) const;
@@ -1147,6 +1151,7 @@ private:
     bool strokeHoldRecognizerEnabled{};        ///< Hold the pen still to recognize the stroke as a shape
     bool scratchOutEnabled{};                  ///< Scribble over strokes to erase them
     bool endlessPagesByDefault{};
+    bool lineStartsNewPage{true};
     bool stylusButton1TapToolbox{};
     bool stylusButton2TapToolbox{};
     std::string favoritePens;                  ///< Saved favourite pens (see FavoritePens.h)

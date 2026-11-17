@@ -446,6 +446,11 @@
      <attribute name="action">win.new-page-at-end</attribute>
     </item>
     <item>
+     <attribute name="label" translatable="yes">End Page Here, New Page _Below</attribute>
+     <attribute name="action">win.new-page-below</attribute>
+     <attribute name="accel">&lt;Ctrl&gt;&lt;Shift&gt;d</attribute>
+    </item>
+    <item>
      <attribute name="label" translatable="yes">Duplicate Page</attribute>
      <attribute name="action">win.duplicate-page</attribute>
     </item>

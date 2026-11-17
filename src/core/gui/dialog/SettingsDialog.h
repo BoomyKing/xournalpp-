@@ -86,6 +86,8 @@ private:
     GtkWidget* tapToolboxCheck[2] = {nullptr, nullptr};
     /// "New notebooks have endless pages" checkbox
     GtkWidget* endlessDefaultCheck = nullptr;
+    /// "A line across the page starts a new page" checkbox
+    GtkWidget* lineBreakCheck = nullptr;
     GtkWidget* callib = nullptr;
     int dpi = 72;
 

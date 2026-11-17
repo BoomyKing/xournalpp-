@@ -237,6 +237,11 @@ public:
     void addDefaultPage(const std::optional<std::string>& pageTemplate, Document* doc = nullptr);
     void duplicatePage();
     void insertNewPage(size_t position, bool automatedInsertion = false);
+
+    /// Makes all pages of the document endless (growing as you write, see XojPage::isEndless) or normal again
+    void setEndlessPages(bool enable);
+    /// Grows an endless page so that there is room below its content
+    void growEndlessPage(const PageRef& page);
     void appendNewPdfPages();
     void insertPage(const PageRef& page, size_t position, bool shouldScrollToPage = true);
     void deletePage();

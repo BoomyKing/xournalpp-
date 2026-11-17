@@ -555,6 +555,15 @@ template <>
 struct ActionProperties<Action::PAPER_BACKGROUND_COLOR> {
     static void callback(GSimpleAction*, GVariant*, Control* ctrl) { ctrl->changePageBackgroundColor(); }
 };
+template <>
+struct ActionProperties<Action::ENDLESS_PAGES> {
+    using state_type = bool;
+    static state_type initialState(Control*) { return false; }
+    static void callback(GSimpleAction* ga, GVariant* p, Control* ctrl) {
+        g_simple_action_set_state(ga, p);
+        ctrl->setEndlessPages(g_variant_get_boolean(p));
+    }
+};
 
 
 /** Tool menu **/

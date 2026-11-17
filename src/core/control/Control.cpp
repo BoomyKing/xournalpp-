@@ -678,6 +678,9 @@ void Control::addDefaultPage(const std::optional<std::string>& pageTemplate, Doc
     auto page = std::make_shared<XojPage>(model.getPageWidth(), model.getPageHeight());
     page->setBackgroundColor(model.getBackgroundColor());
     page->setBackgroundType(model.getBackgroundType());
+    if (settings->getEndlessPagesByDefault() && !page->getBackgroundType().isPdfPage()) {
+        page->setSheetHeight(page->getHeight());
+    }
 
     if (doc == nullptr || doc == this->doc) {
         // Apply to the curent document
@@ -695,6 +698,8 @@ void Control::updatePageActions() {
     this->actionDB->enableAction(Action::DELETE_PAGE, nbPages > 1);
     this->actionDB->enableAction(Action::MOVE_PAGE_TOWARDS_BEGINNING, currentPage != 0);
     this->actionDB->enableAction(Action::MOVE_PAGE_TOWARDS_END, currentPage < nbPages - 1);
+    PageRef page = getCurrentPage();
+    this->actionDB->setActionState(Action::ENDLESS_PAGES, page && page->isEndless());
 }
 
 void Control::deletePage() {
@@ -863,6 +868,57 @@ void Control::askInsertPdfPage(size_t pdfPage) {
 
 void Control::insertNewPage(size_t position, bool automatedInsertion) {
     pageBackgroundChangeController->insertNewPage(position, automatedInsertion);
+}
+
+void Control::setEndlessPages(bool enable) {
+    std::vector<PageRef> pages;
+    this->doc->lock();
+    for (size_t i = 0; i < this->doc->getPageCount(); i++) {
+        PageRef page = this->doc->getPage(i);
+        if (enable && !page->isEndless() && !page->getBackgroundType().isPdfPage()) {
+            page->setSheetHeight(page->getHeight());
+            pages.push_back(page);
+        } else if (!enable) {
+            page->setSheetHeight(0);
+        }
+    }
+    this->doc->unlock();
+    for (const PageRef& page: pages) {
+        growEndlessPage(page);
+    }
+    updateWindowTitle();
+}
+
+void Control::growEndlessPage(const PageRef& page) {
+    this->doc->lock_shared();
+    if (!page->isEndless() || page->getBackgroundType().isPdfPage()) {
+        this->doc->unlock_shared();
+        return;
+    }
+    double contentBottom = 0;
+    for (const Layer* layer: page->getLayersView()) {
+        for (const Element* e: layer->getElementsView()) {
+            contentBottom = std::max(contentBottom, e->getY() + e->getElementHeight());
+        }
+    }
+    const double sheet = page->getSheetHeight();
+    const double oldHeight = page->getHeight();
+    double height = std::max(oldHeight, sheet);
+    // there is always at least a third of a sheet free below the content
+    while (contentBottom > height - sheet / 3) {
+        height += sheet;
+    }
+    this->doc->unlock_shared();
+    if (height <= oldHeight) {
+        return;
+    }
+    this->doc->lock();
+    page->setSize(page->getWidth(), height);
+    size_t pageNr = this->doc->indexOf(page);
+    this->doc->unlock();
+    if (pageNr != npos) {
+        firePageSizeChanged(pageNr);
+    }
 }
 
 void Control::appendNewPdfPages() {

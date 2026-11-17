@@ -28,6 +28,7 @@ XojPage::XojPage(XojPage const& page):
         backgroundImage(page.backgroundImage),
         width(page.width),
         height(page.height),
+        sheetHeight(page.sheetHeight),
         currentLayer(page.currentLayer),
         bgType(page.bgType),
         pdfBackgroundPage(page.pdfBackgroundPage),
@@ -38,6 +39,12 @@ XojPage::XojPage(XojPage const& page):
 }
 
 auto XojPage::clone() -> XojPage* { return new XojPage(*this); }
+
+auto XojPage::isEndless() const -> bool { return this->sheetHeight > 0; }
+
+auto XojPage::getSheetHeight() const -> double { return this->sheetHeight; }
+
+void XojPage::setSheetHeight(double sheetHeight) { this->sheetHeight = std::max(0.0, sheetHeight); }
 
 void XojPage::addLayer(Layer* layer) {
     this->layer.push_back(layer);

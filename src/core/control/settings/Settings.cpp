@@ -238,6 +238,7 @@ void Settings::loadDefault() {
     this->strokeHoldRecognizerEnabled = false;
     this->scratchOutEnabled = false;
     this->favoritePens = "";
+    this->endlessPagesByDefault = false;
     this->stylusButton1TapToolbox = false;
     this->stylusButton2TapToolbox = false;
     this->strokeHoldRecognizerDelay = 600;
@@ -696,6 +697,8 @@ void Settings::parseItem(xmlDocPtr doc, xmlNodePtr cur) {
         this->snapRecognizedShapesEnabled = xmlStrcmp(value, reinterpret_cast<const xmlChar*>("true")) == 0;
     } else if (xmlStrcmp(name, reinterpret_cast<const xmlChar*>("scratchOutEnabled")) == 0) {
         this->scratchOutEnabled = xmlStrcmp(value, reinterpret_cast<const xmlChar*>("true")) == 0;
+    } else if (xmlStrcmp(name, reinterpret_cast<const xmlChar*>("endlessPagesByDefault")) == 0) {
+        this->endlessPagesByDefault = xmlStrcmp(value, reinterpret_cast<const xmlChar*>("true")) == 0;
     } else if (xmlStrcmp(name, reinterpret_cast<const xmlChar*>("stylusButton1TapToolbox")) == 0) {
         this->stylusButton1TapToolbox = xmlStrcmp(value, reinterpret_cast<const xmlChar*>("true")) == 0;
     } else if (xmlStrcmp(name, reinterpret_cast<const xmlChar*>("stylusButton2TapToolbox")) == 0) {
@@ -1191,6 +1194,7 @@ void Settings::save() {
     SAVE_BOOL_PROP(strokeHoldRecognizerEnabled);
     SAVE_BOOL_PROP(scratchOutEnabled);
     SAVE_STRING_PROP(favoritePens);
+    SAVE_BOOL_PROP(endlessPagesByDefault);
     SAVE_BOOL_PROP(stylusButton1TapToolbox);
     SAVE_BOOL_PROP(stylusButton2TapToolbox);
     SAVE_UINT_PROP(strokeHoldRecognizerDelay);
@@ -2354,6 +2358,10 @@ auto Settings::getStrokeHoldRecognizerEnabled() const -> bool { return this->str
 void Settings::setScratchOutEnabled(bool enabled) { this->scratchOutEnabled = enabled; }
 
 auto Settings::getScratchOutEnabled() const -> bool { return this->scratchOutEnabled; }
+
+void Settings::setEndlessPagesByDefault(bool enabled) { this->endlessPagesByDefault = enabled; }
+
+auto Settings::getEndlessPagesByDefault() const -> bool { return this->endlessPagesByDefault; }
 
 auto Settings::getStylusButtonTapToolbox(size_t index) const -> bool {
     return index == 0 ? this->stylusButton1TapToolbox : this->stylusButton2TapToolbox;

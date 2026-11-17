@@ -226,6 +226,9 @@ void SaveHandler::visitPage(XmlNode* root, ConstPageRef p, const Document* doc, 
     root->addChild(page);
     page->setAttrib("width", p->getWidth());
     page->setAttrib("height", p->getHeight());
+    if (p->isEndless()) {
+        page->setAttrib("endless", p->getSheetHeight());
+    }
 
     auto* background = new XmlNode("background");
     page->addChild(background);

@@ -318,6 +318,8 @@ private:
     Range computeRenderWindow() const;
     /// Whether the buffer no longer covers enough around the visible part (call from the UI thread, drawingMutex held)
     bool bufferNeedsRecentering() const;
+    /// Grows an endless page if its content gets close to the bottom (after the current change is complete)
+    void growIfEndless(double bottom);
     /// Pages up to this height (in pixels at the current zoom) are always drawn whole
     static constexpr double MAX_WHOLE_PAGE_RENDER_HEIGHT = 4096;
 

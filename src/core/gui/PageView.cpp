@@ -1276,7 +1276,29 @@ auto XojPageView::getRect() const -> Rectangle<double> {
 
 void XojPageView::rectChanged(Rectangle<double>& rect) { rerenderRect(rect.x, rect.y, rect.width, rect.height); }
 
-void XojPageView::rangeChanged(Range& range) { rerenderRange(range); }
+void XojPageView::rangeChanged(Range& range) {
+    rerenderRange(range);
+    growIfEndless(range.maxY);
+}
+
+void XojPageView::growIfEndless(double bottom) {
+    if (!page->isEndless() || bottom <= page->getHeight() - page->getSheetHeight() / 3) {
+        return;
+    }
+    // grow once the current change is complete
+    struct Growth {
+        Control* control;
+        PageRef page;
+    };
+    g_idle_add(
+            +[](gpointer d) -> gboolean {
+                auto* g = static_cast<Growth*>(d);
+                g->control->growEndlessPage(g->page);
+                delete g;
+                return G_SOURCE_REMOVE;
+            },
+            new Growth{xournal->getControl(), page});
+}
 
 void XojPageView::pageChanged() { rerenderPage(); }
 
@@ -1296,11 +1318,13 @@ void XojPageView::elementChanged(const Element* elem) {
     if (!noRerender) {
         rerenderElement(elem);
     }
+    growIfEndless(elem->getY() + elem->getElementHeight());
 }
 
 void XojPageView::elementsChanged(const std::vector<const Element*>& elements, const Range& range) {
     if (!range.empty()) {
         rerenderRange(range);
+        growIfEndless(range.maxY);
     }
 }
 

@@ -84,6 +84,8 @@ private:
     Control* control = nullptr;
     /// "Tap: floating toolbox" checkboxes of stylus buttons 1 and 2
     GtkWidget* tapToolboxCheck[2] = {nullptr, nullptr};
+    /// "New notebooks have endless pages" checkbox
+    GtkWidget* endlessDefaultCheck = nullptr;
     GtkWidget* callib = nullptr;
     int dpi = 72;
 

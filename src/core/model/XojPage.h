@@ -55,6 +55,15 @@ public:
     double getWidth() const;
     double getHeight() const;
 
+    /**
+     * Endless pages grow downwards, one sheet at a time, as their content gets close to the bottom.
+     * The sheet height is the page's normal height (e.g. A4), used for growing and for printing on sheets.
+     * 0 means the page is not endless.
+     */
+    bool isEndless() const;
+    double getSheetHeight() const;
+    void setSheetHeight(double sheetHeight);
+
     size_t getPdfPageNr() const;
 
     bool isAnnotated() const;
@@ -96,6 +105,8 @@ private:
      */
     double width = 0;
     double height = 0;
+    /// For endless pages: the height of one sheet; 0 otherwise
+    double sheetHeight = 0;
 
     /**
      * The layer list

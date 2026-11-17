@@ -498,6 +498,10 @@
      <attribute name="label" translatable="yes">Paper _Color</attribute>
      <attribute name="action">win.paper-background-color</attribute>
     </item>
+    <item>
+     <attribute name="label" translatable="yes">_Endless Pages</attribute>
+     <attribute name="action">win.endless-pages</attribute>
+    </item>
     <submenu id="menuJournalPaperBackground">
      <attribute name="label" translatable="yes">Paper B_ackground</attribute>
     </submenu>

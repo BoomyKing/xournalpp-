@@ -99,6 +99,7 @@ enum class Action : size_t {
     DELETE_PAGE,
     PAPER_FORMAT,
     PAPER_BACKGROUND_COLOR,
+    ENDLESS_PAGES,
 
     // Menu Tools
     SELECT_TOOL,

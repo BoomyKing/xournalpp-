@@ -220,6 +220,31 @@ void SettingsDialog::initMouseButtonEvents(GladeSearchpath* gladeSearchPath) {
     emplaceButton("hboxPenButton1", BUTTON_STYLUS_ONE);
     emplaceButton("hboxPenButton2", BUTTON_STYLUS_TWO);
 
+    // Endless pages: a "Pages" section after the shape recognizer settings
+    {
+        GtkWidget* recognizerBox = gtk_widget_get_parent(builder.get("cbScratchOutEnabled"));
+        GtkWidget* recognizerFrame = recognizerBox ? gtk_widget_get_parent(recognizerBox) : nullptr;
+        GtkWidget* drawingAreaBox = recognizerFrame ? gtk_widget_get_parent(recognizerFrame) : nullptr;
+        if (drawingAreaBox && GTK_IS_BOX(drawingAreaBox)) {
+            GtkWidget* frame = gtk_frame_new(_("Pages"));
+            gtk_frame_set_label_align(GTK_FRAME(frame), 0.01f, 0.5f);
+            GtkWidget* cb = gtk_check_button_new_with_label(_("New notebooks have endless pages"));
+            gtk_widget_set_tooltip_text(cb, _("Endless pages grow downwards as you write, one sheet at a time. "
+                                              "Journal > Endless Pages turns this on or off for the open notebook."));
+            gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(cb), settings->getEndlessPagesByDefault());
+            gtk_widget_set_margin_start(cb, 12);
+            gtk_widget_set_margin_end(cb, 12);
+            gtk_widget_set_margin_bottom(cb, 8);
+            gtk_container_add(GTK_CONTAINER(frame), cb);
+            gtk_box_pack_start(GTK_BOX(drawingAreaBox), frame, false, true, 0);
+            gint position = 0;
+            gtk_container_child_get(GTK_CONTAINER(drawingAreaBox), recognizerFrame, "position", &position, nullptr);
+            gtk_box_reorder_child(GTK_BOX(drawingAreaBox), frame, position + 1);
+            gtk_widget_show_all(frame);
+            this->endlessDefaultCheck = cb;
+        }
+    }
+
     // Tap or hold: a quick tap of a stylus button can open the floating toolbox, while holding it uses its tool
     const char* boxes[2] = {"hboxPenButton1", "hboxPenButton2"};
     for (size_t i = 0; i < 2; i++) {
@@ -758,6 +783,9 @@ void SettingsDialog::load() {
 void SettingsDialog::save() {
     settings->transactionStart();
 
+    if (this->endlessDefaultCheck) {
+        settings->setEndlessPagesByDefault(gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(this->endlessDefaultCheck)));
+    }
     for (size_t i = 0; i < 2; i++) {
         if (this->tapToolboxCheck[i]) {
             settings->setStylusButtonTapToolbox(

@@ -547,6 +547,10 @@ public:
     void setScratchOutEnabled(bool enabled);
     bool getScratchOutEnabled() const;
 
+    /// Whether new notebooks start with endless pages (see XojPage::isEndless)
+    void setEndlessPagesByDefault(bool enabled);
+    bool getEndlessPagesByDefault() const;
+
     /// Whether a quick tap of stylus button 1 (index 0) or 2 (index 1) opens the floating toolbox (holding it still
     /// uses the tool set for the button)
     bool getStylusButtonTapToolbox(size_t index) const;
@@ -1142,6 +1146,7 @@ private:
     bool snapRecognizedShapesEnabled{};
     bool strokeHoldRecognizerEnabled{};        ///< Hold the pen still to recognize the stroke as a shape
     bool scratchOutEnabled{};                  ///< Scribble over strokes to erase them
+    bool endlessPagesByDefault{};
     bool stylusButton1TapToolbox{};
     bool stylusButton2TapToolbox{};
     std::string favoritePens;                  ///< Saved favourite pens (see FavoritePens.h)

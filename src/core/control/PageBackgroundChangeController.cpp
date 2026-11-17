@@ -328,7 +328,14 @@ void PageBackgroundChangeController::insertNewPage(size_t position, bool automat
         width = current->getWidth();
         height = current->getHeight();
     }
+    if (current->isEndless()) {
+        // a new page below an endless one is endless too, starting with one sheet
+        height = current->getSheetHeight();
+    }
     auto page = std::make_shared<XojPage>(width, height);
+    if (current->isEndless()) {
+        page->setSheetHeight(current->getSheetHeight());
+    }
 
     auto afterConfigured = [position, shouldScrollToPage = !automatedInsertion, ctrl = this->control](PageRef page) {
         ctrl->insertPage(page, position, shouldScrollToPage);

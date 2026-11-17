@@ -321,6 +321,9 @@ void LoadHandler::parseContents() {
         double height = LoadHandlerHelper::getAttribDouble("height", this);
 
         this->page = std::make_unique<XojPage>(width, height, /*suppressLayer*/ true);
+        if (const char* endless = LoadHandlerHelper::getAttrib("endless", true, this)) {
+            this->page->setSheetHeight(g_ascii_strtod(endless, nullptr));
+        }
 
         pages.push_back(this->page);
     } else if (strcmp(elementName, "audio") == 0) {

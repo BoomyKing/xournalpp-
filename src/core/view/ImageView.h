@@ -26,5 +26,8 @@ public:
     void draw(const Context& ctx) const override;
 
 private:
+    /// The row of buttons of an animation with states
+    void drawButtons(cairo_t* cr) const;
+
     const Image* image;
 };

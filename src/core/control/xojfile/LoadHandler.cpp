@@ -709,6 +709,11 @@ void LoadHandler::parseImage() {
     this->image->setY(top);
     this->image->setWidth(right - left);
     this->image->setHeight(bottom - top);
+    if (const char* states = LoadHandlerHelper::getAttrib("states", true, this)) {
+        const char* controls = LoadHandlerHelper::getAttrib("controls", true, this);
+        this->image->setStates(Image::parseStates(states),
+                               controls ? g_ascii_strtod(controls, nullptr) : Image::DEFAULT_CONTROLS_PART);
+    }
 }
 
 void LoadHandler::parseTexImage() {

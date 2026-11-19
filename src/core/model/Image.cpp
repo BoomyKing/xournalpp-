@@ -109,6 +109,8 @@ auto Image::clone() const -> ElementPtr {
     img->width = this->width;
     img->height = this->height;
     img->data = this->data;
+    img->states = this->states;
+    img->controlsPart = this->controlsPart;
 
     img->image = cairo_surface_reference(this->image);
     if (this->format) {
@@ -353,6 +355,33 @@ auto Image::advanceAnimation(int64_t now) const -> bool {
     if (!this->framesReady) {
         return false;
     }
+    if (!this->states.empty()) {
+        if (!this->playing || now < this->nextFrameAt) {
+            return false;
+        }
+        size_t frame = this->currentFrame;
+        if (frame == this->stopFrame) {
+            // this part is done
+            if (this->pendingState >= 0) {
+                const AnimationState& s = this->states[static_cast<size_t>(this->pendingState)];
+                this->pendingState = -1;
+                playSegment(s.first, s.last, now);
+                return false;
+            }
+            if (this->activeState >= 0 && this->states[static_cast<size_t>(this->activeState)].loop) {
+                const AnimationState& s = this->states[static_cast<size_t>(this->activeState)];
+                this->currentFrame = std::min(s.first, this->frames.size() - 1);
+                this->nextFrameAt = now + static_cast<int64_t>(this->frameDelays[this->currentFrame]) * 1000;
+                return true;
+            }
+            this->playing = false;
+            return false;
+        }
+        frame = this->playDirection > 0 ? frame + 1 : frame - 1;
+        this->currentFrame = frame;
+        this->nextFrameAt = now + static_cast<int64_t>(this->frameDelays[frame]) * 1000;
+        return true;
+    }
     int64_t t = (now / 1000) % this->animationDuration;
     size_t frame = 0;
     while (frame + 1 < this->frameDelays.size() && t >= this->frameDelays[frame]) {
@@ -369,6 +398,9 @@ auto Image::advanceAnimation(int64_t now) const -> bool {
 auto Image::msUntilNextFrame(int64_t now) const -> int {
     if (!this->framesReady) {
         return 1000;
+    }
+    if (!this->states.empty()) {
+        return static_cast<int>(std::clamp<int64_t>((this->nextFrameAt - now + 999) / 1000, 1, 1000));
     }
     int64_t t = (now / 1000) % this->animationDuration;
     for (int delay: this->frameDelays) {
@@ -407,6 +439,177 @@ void Image::scale(double x0, double y0, double fx, double fy, double rotation,
 
 void Image::rotate(double x0, double y0, double th) {}
 
+auto Image::getStates() const -> const std::vector<AnimationState>& { return this->states; }
+
+void Image::setStates(std::vector<AnimationState> states, double controlsPart) {
+    this->states = std::move(states);
+    this->controlsPart = this->states.empty() ? 0 : std::clamp(controlsPart, 0.0, 0.5);
+    this->activeState = -1;
+    this->pendingState = -1;
+    this->playing = false;
+}
+
+auto Image::getControlsPart() const -> double { return this->controlsPart; }
+
+auto Image::getDisplaySize() const -> std::pair<int, int> {
+    auto [w, h] = getImageSize();
+    if (h > 0 && this->controlsPart > 0) {
+        h = static_cast<int>(std::lround(h / (1 - this->controlsPart)));
+    }
+    return {w, h};
+}
+
+auto Image::formatStates() const -> std::string {
+    std::string s;
+    for (const AnimationState& st: this->states) {
+        if (!s.empty()) {
+            s += ';';
+        }
+        std::string name = st.name;
+        for (char& c: name) {
+            if (c == '|' || c == ';') {
+                c = ' ';
+            }
+        }
+        s += name + '|' + std::to_string(st.first) + '|' + std::to_string(st.last) + '|' + (st.loop ? "loop" : "once");
+    }
+    return s;
+}
+
+auto Image::parseStates(const std::string& text) -> std::vector<AnimationState> {
+    std::vector<AnimationState> states;
+    size_t pos = 0;
+    while (pos < text.size()) {
+        size_t end = text.find(';', pos);
+        if (end == std::string::npos) {
+            end = text.size();
+        }
+        const std::string entry = text.substr(pos, end - pos);
+        pos = end + 1;
+        std::vector<std::string> f;
+        size_t p = 0;
+        while (true) {
+            size_t q = entry.find('|', p);
+            f.push_back(entry.substr(p, q == std::string::npos ? std::string::npos : q - p));
+            if (q == std::string::npos) {
+                break;
+            }
+            p = q + 1;
+        }
+        if (f.size() < 3 || f[0].empty()) {
+            continue;
+        }
+        char* endPtr = nullptr;
+        const unsigned long first = std::strtoul(f[1].c_str(), &endPtr, 10);
+        const unsigned long last = std::strtoul(f[2].c_str(), &endPtr, 10);
+        if (states.size() >= 32 || first > 100000 || last > 100000) {
+            continue;
+        }
+        states.push_back({f[0], first, last, f.size() > 3 && f[3] == "loop"});
+    }
+    return states;
+}
+
+auto Image::loadStatesFromGif() -> bool {
+    // GIF comment extensions: 0x21 0xFE, then sub-blocks
+    std::string_view d = this->data;
+    if (d.size() < 13 || d.substr(0, 4) != "GIF8") {
+        return false;
+    }
+    const std::string_view key = "xopp-states:";
+    for (size_t pos = d.find("\x21\xFE"); pos != std::string_view::npos; pos = d.find("\x21\xFE", pos + 2)) {
+        std::string text;
+        size_t i = pos + 2;
+        while (i < d.size()) {
+            const size_t len = static_cast<unsigned char>(d[i++]);
+            if (len == 0 || i + len > d.size()) {
+                break;
+            }
+            text.append(d.substr(i, len));
+            i += len;
+        }
+        if (text.compare(0, key.size(), key) == 0) {
+            auto parsed = parseStates(text.substr(key.size()));
+            if (!parsed.empty()) {
+                setStates(std::move(parsed), DEFAULT_CONTROLS_PART);
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+auto Image::getPictureRect() const -> xoj::util::Rectangle<double> {
+    return {this->x, this->y, this->width, this->height * (1 - this->controlsPart)};
+}
+
+auto Image::getButtonRect(size_t index) const -> xoj::util::Rectangle<double> {
+    const double rowY = this->y + this->height * (1 - this->controlsPart);
+    const double rowH = this->height * this->controlsPart;
+    const double n = static_cast<double>(std::max<size_t>(this->states.size(), 1));
+    const double gap = std::min(rowH * 0.2, this->width * 0.02);
+    const double w = (this->width - gap * (n + 1)) / n;
+    return {this->x + gap + static_cast<double>(index) * (w + gap), rowY + gap, w, rowH - 2 * gap};
+}
+
+auto Image::buttonAt(double px, double py) const -> int {
+    for (size_t i = 0; i < this->states.size(); i++) {
+        auto r = getButtonRect(i);
+        if (px >= r.x && px <= r.x + r.width && py >= r.y && py <= r.y + r.height) {
+            return static_cast<int>(i);
+        }
+    }
+    return -1;
+}
+
+void Image::playSegment(size_t from, size_t to, int64_t now) const {
+    const size_t lastFrame = this->frames.size() - 1;
+    from = std::min(from, lastFrame);
+    to = std::min(to, lastFrame);
+    this->currentFrame = from;
+    this->stopFrame = to;
+    this->playDirection = to >= from ? 1 : -1;
+    this->playing = true;
+    this->nextFrameAt = now + static_cast<int64_t>(this->frameDelays[from]) * 1000;
+}
+
+void Image::triggerState(size_t index, int64_t now) const {
+    if (index >= this->states.size() || !this->framesReady) {
+        return;
+    }
+    const AnimationState& target = this->states[index];
+    const int current = this->activeState;
+    if (current == static_cast<int>(index)) {
+        // tapping the active state again: back to the start
+        this->activeState = -1;
+        this->pendingState = -1;
+        if (target.loop) {
+            playSegment(target.first, target.first, now);
+        } else {
+            playSegment(this->currentFrame, target.first, now);
+        }
+        return;
+    }
+    this->activeState = static_cast<int>(index);
+    if (current < 0 && this->playing && this->playDirection < 0) {
+        // still going back to the start: finish that, then play the new state
+        this->pendingState = static_cast<int>(index);
+        return;
+    }
+    if (current >= 0 && !this->states[static_cast<size_t>(current)].loop) {
+        // first undo the current transformation, then play the new one
+        playSegment(this->currentFrame, this->states[static_cast<size_t>(current)].first, now);
+        this->pendingState = static_cast<int>(index);
+    } else {
+        this->pendingState = -1;
+        playSegment(target.first, target.last, now);
+    }
+}
+
+auto Image::getActiveState() const -> int { return this->activeState; }
+
+auto Image::isPlaying() const -> bool { return this->framesReady && (this->states.empty() || this->playing); }
+
 void Image::serialize(ObjectOutputStream& out) const {
     out.writeObject("Image");
 
@@ -416,6 +619,8 @@ void Image::serialize(ObjectOutputStream& out) const {
     out.writeDouble(this->height);
 
     out.writeImage(this->data);
+    out.writeString(formatStates());
+    out.writeDouble(this->controlsPart);
 
     out.endObject();
 }
@@ -430,6 +635,9 @@ void Image::readSerialized(ObjectInputStream& in) {
 
     // (setImage also finds the format: without it, a pasted GIF wouldn't be saved as a GIF)
     setImage(in.readImage());
+    std::string statesText = in.readString();
+    const double part = in.readDouble();
+    setStates(parseStates(statesText), part);
 
     in.endObject();
     this->calcSize();

@@ -249,6 +249,11 @@ auto XojPageView::onButtonPressEvent(const PositionInputData& pos) -> bool {
     XournalppCursor* cursor = xournal->getCursor();
     cursor->setMouseDown(true);
 
+    if (!this->replayingPress && findAnimationButton(x, y).first) {
+        this->heldButtonPress = pos;  // a tap on an animation button, unless the pointer moves
+        return true;
+    }
+
     if (((h->getToolType() == TOOL_PEN || h->getToolType() == TOOL_HIGHLIGHTER) &&
          h->getDrawingType() != DRAWING_TYPE_SPLINE) ||
         (h->getToolType() == TOOL_ERASER && h->getEraserType() == ERASER_TYPE_WHITEOUT)) {
@@ -540,6 +545,19 @@ auto XojPageView::onMotionNotifyEvent(const PositionInputData& pos) -> bool {
         return false;
     }
 
+    if (this->heldButtonPress) {
+        if (std::hypot(pos.x - this->heldButtonPress->x, pos.y - this->heldButtonPress->y) <= BUTTON_TAP_SLOP) {
+            return true;
+        }
+        // not a tap: start what the press would have started
+        PositionInputData press = *this->heldButtonPress;
+        this->heldButtonPress.reset();
+        this->currentSequenceDeviceId.reset();
+        this->replayingPress = true;
+        onButtonPressEvent(press);
+        this->replayingPress = false;
+    }
+
     double zoom = xournal->getZoom();
     double x = pos.x / zoom;
     double y = pos.y / zoom;
@@ -578,6 +596,7 @@ void XojPageView::onSequenceCancelEvent(DeviceId deviceId) {
         return;
     }
     currentSequenceDeviceId.reset();
+    this->heldButtonPress.reset();
 
     if (this->inputHandler) {
         this->inputHandler->onSequenceCancelEvent();
@@ -668,6 +687,19 @@ auto XojPageView::onButtonReleaseEvent(const PositionInputData& pos) -> bool {
     currentSequenceDeviceId.reset();
 
     Control* control = xournal->getControl();
+
+    if (this->heldButtonPress) {
+        // a tap on an animation button
+        this->heldButtonPress.reset();
+        xournal->getCursor()->setMouseDown(false);
+        const double zoom = xournal->getZoom();
+        if (auto [img, index] = findAnimationButton(pos.x / zoom, pos.y / zoom); img) {
+            img->triggerState(static_cast<size_t>(index), g_get_monotonic_time());
+            rerenderRect(img->getX(), img->getY(), img->getElementWidth(), img->getElementHeight());
+            scheduleAnimation();
+        }
+        return true;
+    }
 
     if (this->inputHandler) {
         double zoom = xournal->getZoom();
@@ -1146,6 +1178,30 @@ auto XojPageView::paintPage(cairo_t* cr, GdkRectangle* rect) -> bool {
     return true;
 }
 
+auto XojPageView::findAnimationButton(double x, double y) const -> std::pair<const Image*, int> {
+    const auto& layers = this->page->getLayersView();
+    for (auto it = layers.rbegin(); it != layers.rend(); ++it) {
+        const Layer* layer = *it;
+        if (!layer->isVisible()) {
+            continue;
+        }
+        const auto& elements = layer->getElementsView();
+        for (auto e = elements.rbegin(); e != elements.rend(); ++e) {
+            if ((*e)->getType() != ELEMENT_IMAGE) {
+                continue;
+            }
+            const auto* img = static_cast<const Image*>(*e);
+            if (img->getStates().empty() || !img->isAnimated()) {
+                continue;
+            }
+            if (int index = img->buttonAt(x, y); index >= 0) {
+                return {img, index};
+            }
+        }
+    }
+    return {nullptr, -1};
+}
+
 auto XojPageView::advanceAnimations(bool redraw) -> int {
     const gint64 now = g_get_monotonic_time();
     int delay = -1;
@@ -1158,7 +1214,7 @@ auto XojPageView::advanceAnimations(bool redraw) -> int {
                 continue;
             }
             const auto* img = static_cast<const Image*>(e);
-            if (!img->isAnimated()) {
+            if (!img->isPlaying()) {
                 continue;
             }
             if (redraw && img->advanceAnimation(now)) {

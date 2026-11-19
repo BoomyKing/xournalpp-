@@ -64,6 +64,7 @@ auto ImageHandler::createImageFromFile(const fs::path& p) -> std::unique_ptr<Ima
     auto img = std::make_unique<Image>();
     try {
         img->setImage(fileToString(p));
+        img->loadStatesFromGif();  // an animation with states gets its row of buttons
     } catch (const std::ios_base::failure& e) {
         std::stringstream msg;
         msg << _("Error while opening image file: ") << p.string() << '\n'
@@ -119,7 +120,7 @@ void ImageHandler::automaticScaling(Image& img, PageRef page, int width, int hei
 }
 
 void ImageHandler::automaticScaling(Image& img, PageRef page) {
-    auto [width, height] = img.getImageSize();
+    auto [width, height] = img.getDisplaySize();
     automaticScaling(img, page, width, height);
 }
 
@@ -129,7 +130,7 @@ void ImageHandler::insertImageWithSize(PageRef page, const xoj::util::Rectangle<
         xoj_assert(img);
         img->setX(space.x);
         img->setY(space.y);
-        auto [width, height] = img->getImageSize();
+        auto [width, height] = img->getDisplaySize();
 
         if (static_cast<int>(space.width) != 0 && static_cast<int>(space.height) != 0) {
             // scale down

@@ -2344,10 +2344,11 @@ void Control::clipboardPasteImage(GdkPixbuf* img) {
 auto Control::clipboardPasteImageData(std::string data) -> bool {
     auto image = std::make_unique<Image>();
     image->setImage(std::move(data));
+    image->loadStatesFromGif();  // an animation with states gets its row of buttons
     if (image->renderBuffer().has_value()) {
         return false;  // not an image GdkPixbuf can read
     }
-    auto [width, height] = image->getImageSize();
+    auto [width, height] = image->getDisplaySize();
     if (width <= 0 || height <= 0) {
         return false;
     }

@@ -207,6 +207,11 @@ void SaveHandler::visitLayer(XmlNode* page, const Layer* l) {
             image->setAttrib("top", i->getY());
             image->setAttrib("right", i->getX() + i->getElementWidth());
             image->setAttrib("bottom", i->getY() + i->getElementHeight());
+            if (!i->getStates().empty()) {
+                // an animation with states and a row of buttons
+                image->setAttrib("states", i->formatStates());
+                image->setAttrib("controls", i->getControlsPart());
+            }
         } else if (e->getType() == ELEMENT_TEXIMAGE) {
             auto* i = dynamic_cast<const TexImage*>(e);
             auto* image = new XmlTexNode("teximage", std::string(i->getBinaryData()));

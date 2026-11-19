@@ -13,9 +13,11 @@
 
 #include <cstddef>  // for size_t
 #include <memory>   // for unique_ptr, shared_ptr
-#include <mutex>    // for mutex
-#include <string>   // for string
-#include <vector>   // for vector
+#include <mutex>
+#include <optional>  // for optional
+#include <string>    // for string
+#include <utility>   // for pair
+#include <vector>    // for vector
 
 #include <cairo.h>    // for cairo_t
 #include <gdk/gdk.h>  // for GdkEventKey, GdkRGBA, GdkRectangle
@@ -23,13 +25,14 @@
 
 #include "gui/inputdevices/DeviceId.h"
 #include "gui/inputdevices/InputEvents.h"
-#include "model/PageListener.h"       // for PageListener
-#include "model/PageRef.h"            // for PageRef
-#include "util/Rectangle.h"           // for Rectangle
-#include "util/raii/CairoWrappers.h"  // for CairoSurfaceSPtr
-#include "util/raii/GSourceURef.h"    // for GSourceURef
-#include "view/Mask.h"                // for Mask
-#include "view/Repaintable.h"         // for Repaintable
+#include "gui/inputdevices/PositionInputData.h"  // for PositionInputData
+#include "model/PageListener.h"                  // for PageListener
+#include "model/PageRef.h"                       // for PageRef
+#include "util/Rectangle.h"                      // for Rectangle
+#include "util/raii/CairoWrappers.h"             // for CairoSurfaceSPtr
+#include "util/raii/GSourceURef.h"               // for GSourceURef
+#include "view/Mask.h"                           // for Mask
+#include "view/Repaintable.h"                    // for Repaintable
 
 #include "Layout.h"            // for Layout
 #include "LegacyRedrawable.h"  // for LegacyRedrawable
@@ -46,6 +49,7 @@ class TextEditor;
 class VerticalToolHandler;
 class XournalView;
 class Element;
+class Image;
 class PositionInputData;
 class Range;
 class TexImage;
@@ -331,6 +335,17 @@ private:
     int mappedCol{};
 
     DeviceId currentSequenceDeviceId;
+
+    /**
+     * Buttons of animations with states: a press on a button is held back. Released without moving, it taps the
+     * button; moved, it is replayed as a normal press (so that strokes can still start on a button).
+     */
+    std::optional<PositionInputData> heldButtonPress;
+    bool replayingPress = false;
+    /// The topmost visible animation button at a point (page coordinates): the image and the button's index
+    std::pair<const Image*, int> findAnimationButton(double x, double y) const;
+    /// Pointer movement (in screen pixels) that turns a press on a button into a normal press
+    static constexpr double BUTTON_TAP_SLOP = 6.0;
 
 
     /// Animated GIFs: while the page is visible, a timer shows their next frames (started when the page is painted)

@@ -1205,7 +1205,7 @@ auto XojPageView::findAnimationButton(double x, double y) const -> std::pair<con
                 continue;
             }
             const auto* img = static_cast<const Image*>(*e);
-            if (img->getStates().empty() || !img->isAnimated()) {
+            if (img->getStates().empty()) {
                 continue;
             }
             if (int index = img->buttonAt(x, y); index >= 0) {
@@ -1228,6 +1228,10 @@ auto XojPageView::advanceAnimations(bool redraw) -> int {
                 continue;
             }
             const auto* img = static_cast<const Image*>(e);
+            if (img->isDecoding()) {
+                delay = delay < 0 ? DECODING_POLL_DELAY : std::min(delay, DECODING_POLL_DELAY);  // check back soon
+                continue;
+            }
             if (!img->isPlaying()) {
                 continue;
             }

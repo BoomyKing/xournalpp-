@@ -6,7 +6,8 @@
 #include <cstring>    // for strcmp
 #include <memory>
 #include <string_view>  // for string_view
-#include <utility>  // for move, pair
+#include <thread>       // for thread
+#include <utility>      // for move, pair
 
 #include <cairo.h>    // for cairo_surface_destroy
 #include <gdk/gdk.h>  // for gdk_cairo_set_sourc...
@@ -30,6 +31,9 @@ namespace {
 constexpr uint64_t MAX_ANIMATION_BYTES = 256u << 20;
 /// Shortest time a frame is shown (ms), as browsers do: GIFs with 0 delays would otherwise spin as fast as possible
 constexpr int MIN_FRAME_DELAY = 20;
+/// Frames are kept at least this big (relative to the GIF) to fit the memory budget; GIFs needing smaller ones are not
+/// animated
+constexpr double MIN_FRAME_SCALE = 0.35;
 
 /// Number of frames in GIF data, found by walking its blocks (without decoding the pixels). 0 if it isn't a GIF.
 auto countGifFrames(std::string_view d) -> size_t {
@@ -111,21 +115,16 @@ auto Image::clone() const -> ElementPtr {
     img->data = this->data;
     img->states = this->states;
     img->controlsPart = this->controlsPart;
+    img->rightToLeft = this->rightToLeft;
 
     img->image = cairo_surface_reference(this->image);
     if (this->format) {
         img->format = gdk_pixbuf_format_copy(this->format);
     }
     img->imageSize = this->imageSize;
-    if (this->framesReady) {
-        for (cairo_surface_t* frame: this->frames) {
-            img->frames.push_back(cairo_surface_reference(frame));
-        }
-        img->frameDelays = this->frameDelays;
-        img->animationDuration = this->animationDuration;
-        img->currentFrame = this->currentFrame.load();
-        img->framesReady = true;
-    }
+    // the frames never change once decoded, so copies share them (also while they are being decoded)
+    img->anim = this->anim;
+    img->currentFrame = this->currentFrame.load();
     img->snappedBounds = this->snappedBounds;
     img->sizeCalculated = this->sizeCalculated;
 
@@ -235,8 +234,14 @@ auto Image::renderBuffer() const -> std::optional<std::string> {
                      }),
                      nullptr);
     GError* err = nullptr;
-    bool success = gdk_pixbuf_loader_write(loader.get(), reinterpret_cast<const guchar*>(this->data.c_str()),
-                                           this->data.length(), &err);
+    // Feed the data in small pieces: gdk-pixbuf's GIF loader is very slow with big writes (seconds for a long GIF
+    // written at once, milliseconds in 16 kB pieces)
+    constexpr size_t CHUNK = 16384;
+    bool success = true;
+    for (size_t pos = 0; success && pos < this->data.length(); pos += CHUNK) {
+        success = gdk_pixbuf_loader_write(loader.get(), reinterpret_cast<const guchar*>(this->data.data()) + pos,
+                                          std::min(CHUNK, this->data.length() - pos), &err);
+    }
     if (!success) {
         if (err != nullptr) {
             std::string msg = std::string(_("Failed to load image")) + "\n" + _("Error: ") + err->message;
@@ -289,70 +294,85 @@ void Image::renderAnimation(GdkPixbufAnimation* animation) const {
     if (count < 2 || w <= 0 || h <= 0) {
         return;
     }
-    if (static_cast<uint64_t>(count) * static_cast<uint64_t>(w) * static_cast<uint64_t>(h) * 4 > MAX_ANIMATION_BYTES) {
+    // Frames too big for the memory budget are kept smaller; far too big ones are not animated
+    const double bytes = static_cast<double>(count) * w * h * 4;
+    const double scale = std::min(1.0, std::sqrt(static_cast<double>(MAX_ANIMATION_BYTES) / bytes));
+    if (scale < MIN_FRAME_SCALE) {
         g_warning("Animated GIF too big to animate (%zu frames of %d x %d): showing its first frame", count, w, h);
         return;
     }
-    // Step through the frames with gdk-pixbuf's iterator: it composes each frame onto the previous ones as the
-    // GIF says (transparency, disposal), so every frame is a complete picture
-    G_GNUC_BEGIN_IGNORE_DEPRECATIONS  // gdk-pixbuf's animation API still takes a GTimeVal
-            GTimeVal time = {0, 0};
-    xoj::util::GObjectSPtr<GdkPixbufAnimationIter> iter(gdk_pixbuf_animation_get_iter(animation, &time),
-                                                        xoj::util::adopt);
-    std::vector<cairo_surface_t*> newFrames;
-    std::vector<int> delays;
-    int64_t total = 0;
-    for (size_t i = 0; i < count; i++) {
-        GdkPixbuf* pixbuf = gdk_pixbuf_animation_iter_get_pixbuf(iter.get());
-        if (!pixbuf || gdk_pixbuf_get_width(pixbuf) != w || gdk_pixbuf_get_height(pixbuf) != h) {
-            break;
-        }
-        newFrames.push_back(surfaceFromPixbuf(pixbuf));
-        int delay = gdk_pixbuf_animation_iter_get_delay_time(iter.get());
-        if (delay < 0) {  // the last frame stays forever
-            delays.push_back(-1);
-            break;
-        }
-        delay = std::max(delay, MIN_FRAME_DELAY);
-        delays.push_back(delay);
-        total += delay;
-        g_time_val_add(&time, static_cast<glong>(delay) * 1000);
-        gdk_pixbuf_animation_iter_advance(iter.get(), &time);
-    }
-    G_GNUC_END_IGNORE_DEPRECATIONS
-    if (newFrames.size() < 2 || total <= 0 || delays.back() < 0) {
-        // nothing to animate (or an animation that stops: shown as its first frame)
-        for (cairo_surface_t* f: newFrames) {
-            cairo_surface_destroy(f);
-        }
-        return;
-    }
-    this->frames = std::move(newFrames);
-    this->frameDelays = std::move(delays);
-    this->animationDuration = total;
+    const int fw = std::max(1, static_cast<int>(w * scale));
+    const int fh = std::max(1, static_cast<int>(h * scale));
+
+    // Decoding all frames takes a while for long GIFs: it is done in the background, the first frame is shown
+    // meanwhile. The frames are shared with the thread, which stops early if they are no longer needed.
+    auto frames = std::make_shared<AnimationFrames>();
+    this->anim = frames;
     this->currentFrame = 0;
-    this->framesReady = true;
+    g_object_ref(animation);
+    std::thread([frames, animation, count, w, h, fw, fh]() {
+        // Step through the frames with gdk-pixbuf's iterator: it composes each frame onto the previous ones as the
+        // GIF says (transparency, disposal), so every frame is a complete picture
+        G_GNUC_BEGIN_IGNORE_DEPRECATIONS  // gdk-pixbuf's animation API still takes a GTimeVal
+                GTimeVal time = {0, 0};
+        GdkPixbufAnimationIter* iter = gdk_pixbuf_animation_get_iter(animation, &time);
+        int64_t total = 0;
+        for (size_t i = 0; i < count && !frames->cancelled; i++) {
+            GdkPixbuf* pixbuf = gdk_pixbuf_animation_iter_get_pixbuf(iter);
+            if (!pixbuf || gdk_pixbuf_get_width(pixbuf) != w || gdk_pixbuf_get_height(pixbuf) != h) {
+                break;
+            }
+            if (fw != w || fh != h) {
+                GdkPixbuf* small = gdk_pixbuf_scale_simple(pixbuf, fw, fh, GDK_INTERP_BILINEAR);
+                frames->frames.push_back(surfaceFromPixbuf(small));
+                g_object_unref(small);
+            } else {
+                frames->frames.push_back(surfaceFromPixbuf(pixbuf));
+            }
+            int delay = gdk_pixbuf_animation_iter_get_delay_time(iter);
+            if (delay < 0) {  // the last frame stays forever
+                frames->delays.push_back(-1);
+                break;
+            }
+            delay = std::max(delay, MIN_FRAME_DELAY);
+            frames->delays.push_back(delay);
+            total += delay;
+            g_time_val_add(&time, static_cast<glong>(delay) * 1000);
+            gdk_pixbuf_animation_iter_advance(iter, &time);
+        }
+        G_GNUC_END_IGNORE_DEPRECATIONS
+        g_object_unref(iter);
+        g_object_unref(animation);
+        if (frames->cancelled || frames->frames.size() < 2 || total <= 0 || frames->delays.back() < 0) {
+            // nothing to animate (or an animation that stops: shown as its first frame)
+            frames->failed = true;
+            return;
+        }
+        frames->duration = total;
+        frames->ready.store(true, std::memory_order_release);
+    }).detach();
 }
 
 void Image::clearAnimation() const {
-    this->framesReady = false;
-    for (cairo_surface_t* frame: this->frames) {
-        cairo_surface_destroy(frame);
+    if (this->anim) {
+        this->anim->cancelled = true;
+        this->anim.reset();
     }
-    this->frames.clear();
-    this->frameDelays.clear();
-    this->animationDuration = 0;
     this->currentFrame = 0;
 }
+
+auto Image::isDecoding() const -> bool { return this->anim && !this->anim->ready && !this->anim->failed; }
+
+auto Image::framesReady() const -> bool { return this->anim && this->anim->ready.load(std::memory_order_acquire); }
 
 auto Image::isGif() const -> bool {
     return this->format && std::strcmp(gdk_pixbuf_format_get_name(this->format), "gif") == 0;
 }
 
-auto Image::isAnimated() const -> bool { return this->framesReady; }
+auto Image::isAnimated() const -> bool { return framesReady(); }
 
 auto Image::advanceAnimation(int64_t now) const -> bool {
-    if (!this->framesReady) {
+    if (!framesReady()) {
         return false;
     }
     if (!this->states.empty()) {
@@ -370,8 +390,8 @@ auto Image::advanceAnimation(int64_t now) const -> bool {
             }
             if (this->activeState >= 0 && this->states[static_cast<size_t>(this->activeState)].loop) {
                 const AnimationState& s = this->states[static_cast<size_t>(this->activeState)];
-                this->currentFrame = std::min(s.first, this->frames.size() - 1);
-                this->nextFrameAt = now + static_cast<int64_t>(this->frameDelays[this->currentFrame]) * 1000;
+                this->currentFrame = std::min(s.first, this->anim->frames.size() - 1);
+                this->nextFrameAt = now + static_cast<int64_t>(this->anim->delays[this->currentFrame]) * 1000;
                 return true;
             }
             this->playing = false;
@@ -379,13 +399,13 @@ auto Image::advanceAnimation(int64_t now) const -> bool {
         }
         frame = this->playDirection > 0 ? frame + 1 : frame - 1;
         this->currentFrame = frame;
-        this->nextFrameAt = now + static_cast<int64_t>(this->frameDelays[frame]) * 1000;
+        this->nextFrameAt = now + static_cast<int64_t>(this->anim->delays[frame]) * 1000;
         return true;
     }
-    int64_t t = (now / 1000) % this->animationDuration;
+    int64_t t = (now / 1000) % this->anim->duration;
     size_t frame = 0;
-    while (frame + 1 < this->frameDelays.size() && t >= this->frameDelays[frame]) {
-        t -= this->frameDelays[frame];
+    while (frame + 1 < this->anim->delays.size() && t >= this->anim->delays[frame]) {
+        t -= this->anim->delays[frame];
         frame++;
     }
     if (frame == this->currentFrame) {
@@ -396,14 +416,14 @@ auto Image::advanceAnimation(int64_t now) const -> bool {
 }
 
 auto Image::msUntilNextFrame(int64_t now) const -> int {
-    if (!this->framesReady) {
+    if (!framesReady()) {
         return 1000;
     }
     if (!this->states.empty()) {
         return static_cast<int>(std::clamp<int64_t>((this->nextFrameAt - now + 999) / 1000, 1, 1000));
     }
-    int64_t t = (now / 1000) % this->animationDuration;
-    for (int delay: this->frameDelays) {
+    int64_t t = (now / 1000) % this->anim->duration;
+    for (int delay: this->anim->delays) {
         if (t < delay) {
             return std::max(static_cast<int>(delay - t), 1);
         }
@@ -417,8 +437,8 @@ auto Image::getImage() const -> cairo_surface_t* {
         // An error occurred
         g_warning("%s", opt->c_str());
     }
-    if (this->framesReady) {
-        return this->frames[std::min(this->currentFrame.load(), this->frames.size() - 1)];
+    if (framesReady()) {
+        return this->anim->frames[std::min(this->currentFrame.load(), this->anim->frames.size() - 1)];
     }
     return this->image;
 }
@@ -444,6 +464,8 @@ auto Image::getStates() const -> const std::vector<AnimationState>& { return thi
 void Image::setStates(std::vector<AnimationState> states, double controlsPart) {
     this->states = std::move(states);
     this->controlsPart = this->states.empty() ? 0 : std::clamp(controlsPart, 0.0, 0.5);
+    this->rightToLeft =
+            !this->states.empty() && pango_find_base_dir(this->states.front().name.c_str(), -1) == PANGO_DIRECTION_RTL;
     this->activeState = -1;
     this->pendingState = -1;
     this->playing = false;
@@ -549,7 +571,8 @@ auto Image::getButtonRect(size_t index) const -> xoj::util::Rectangle<double> {
     const double n = static_cast<double>(std::max<size_t>(this->states.size(), 1));
     const double gap = std::min(rowH * 0.2, this->width * 0.02);
     const double w = (this->width - gap * (n + 1)) / n;
-    return {this->x + gap + static_cast<double>(index) * (w + gap), rowY + gap, w, rowH - 2 * gap};
+    const double slot = this->rightToLeft ? n - 1 - static_cast<double>(index) : static_cast<double>(index);
+    return {this->x + gap + slot * (w + gap), rowY + gap, w, rowH - 2 * gap};
 }
 
 auto Image::buttonAt(double px, double py) const -> int {
@@ -563,18 +586,18 @@ auto Image::buttonAt(double px, double py) const -> int {
 }
 
 void Image::playSegment(size_t from, size_t to, int64_t now) const {
-    const size_t lastFrame = this->frames.size() - 1;
+    const size_t lastFrame = this->anim->frames.size() - 1;
     from = std::min(from, lastFrame);
     to = std::min(to, lastFrame);
     this->currentFrame = from;
     this->stopFrame = to;
     this->playDirection = to >= from ? 1 : -1;
     this->playing = true;
-    this->nextFrameAt = now + static_cast<int64_t>(this->frameDelays[from]) * 1000;
+    this->nextFrameAt = now + static_cast<int64_t>(this->anim->delays[from]) * 1000;
 }
 
 void Image::triggerState(size_t index, int64_t now) const {
-    if (index >= this->states.size() || !this->framesReady) {
+    if (index >= this->states.size() || !framesReady()) {
         return;
     }
     const AnimationState& target = this->states[index];
@@ -608,7 +631,7 @@ void Image::triggerState(size_t index, int64_t now) const {
 
 auto Image::getActiveState() const -> int { return this->activeState; }
 
-auto Image::isPlaying() const -> bool { return this->framesReady && (this->states.empty() || this->playing); }
+auto Image::isPlaying() const -> bool { return framesReady() && (this->states.empty() || this->playing); }
 
 void Image::serialize(ObjectOutputStream& out) const {
     out.writeObject("Image");

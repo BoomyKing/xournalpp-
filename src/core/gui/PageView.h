@@ -351,6 +351,8 @@ private:
     static constexpr double BUTTON_TAP_MAX_MOVE = 24.0;
     static constexpr double BUTTON_TAP_SLOP = 8.0;
     static constexpr guint32 BUTTON_TAP_TIME = 300;
+    /// How often (ms) to check whether the frames of an animated GIF have been decoded
+    static constexpr int DECODING_POLL_DELAY = 150;
 
 
     /// Animated GIFs: while the page is visible, a timer shows their next frames (started when the page is painted)

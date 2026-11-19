@@ -11,9 +11,10 @@
 
 #pragma once
 
-#include <atomic>       // for atomic
-#include <cstddef>      // for size_t
-#include <cstdint>      // for int64_t
+#include <atomic>   // for atomic
+#include <cstddef>  // for size_t
+#include <cstdint>  // for int64_t
+#include <memory>
 #include <optional>     // for optional
 #include <string>       // for string
 #include <string_view>  // for string_view
@@ -37,6 +38,21 @@ struct AnimationState {
     size_t first = 0;   ///< first frame
     size_t last = 0;    ///< last frame
     bool loop = false;  ///< keep playing (e.g. a motion) instead of stopping at the last frame (e.g. a transformation)
+};
+
+/// The decoded frames of an animated GIF: written by the decoding thread, then only read once ready
+struct AnimationFrames {
+    std::vector<cairo_surface_t*> frames;
+    std::vector<int> delays;  ///< how long each frame is shown (ms)
+    int64_t duration = 0;     ///< the time all frames take (ms)
+    std::atomic<bool> ready{false};
+    std::atomic<bool> failed{false};
+    std::atomic<bool> cancelled{false};
+    ~AnimationFrames() {
+        for (cairo_surface_t* f: frames) {
+            cairo_surface_destroy(f);
+        }
+    }
 };
 
 class Image: public Element {
@@ -95,6 +111,8 @@ public:
 
     /// Whether the image is an animated GIF whose frames are ready (known once the image has been rendered)
     bool isAnimated() const;
+    /// Whether the frames of an animated GIF are still being decoded
+    bool isDecoding() const;
 
     /// Shows the frame that is due at the given time (as returned by g_get_monotonic_time()).
     /// Returns whether the frame shown changed. To be called from the main thread.
@@ -152,6 +170,7 @@ private:
 
     /// Frees the frames of an animated GIF
     void clearAnimation() const;
+    bool framesReady() const;
 
 private:
     /// Temporary surface used as a render buffer.
@@ -163,17 +182,15 @@ private:
 
     std::string data;
 
-    /// The frames of an animated GIF, how long each one is shown (ms), and the time all of them take (ms).
-    /// Written once by renderAnimation(), then only read: the surfaces stay alive while they may be drawn.
-    mutable std::vector<cairo_surface_t*> frames;
-    mutable std::vector<int> frameDelays;
-    mutable int64_t animationDuration = 0;
-    mutable std::atomic<bool> framesReady{false};
+    /// The frames of an animated GIF (decoded in the background, see renderAnimation())
+    mutable std::shared_ptr<AnimationFrames> anim;
     /// The frame drawn now (set by advanceAnimation() in the main thread, read while rendering)
     mutable std::atomic<size_t> currentFrame{0};
 
     std::vector<AnimationState> states;
     double controlsPart = 0;
+    /// Whether the labels are in a right-to-left language (then the first button is on the right)
+    bool rightToLeft = false;
     /// Playback of states (main thread only)
     mutable int activeState = -1;   ///< state animated to (-1: the start)
     mutable int pendingState = -1;  ///< state to play once the current one has been played back

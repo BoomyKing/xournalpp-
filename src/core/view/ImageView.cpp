@@ -3,7 +3,8 @@
 #include <algorithm>  // for min, max
 #include <cmath>      // for M_PI_2
 
-#include <cairo.h>  // for cairo_image_surface_get_height, cairo_image...
+#include <cairo.h>             // for cairo_image_surface_get_height, cairo_image...
+#include <pango/pangocairo.h>  // for pango_cairo_create_layout
 
 #include "model/Image.h"  // for Image
 #include "view/View.h"    // for Context, OPACITY_NO_AUDIO, view
@@ -75,26 +76,34 @@ void ImageView::drawButtons(cairo_t* cr) const {
         cairo_set_line_width(cr, std::max(0.5, r.height * 0.05));
         cairo_stroke(cr);
 
-        // label, shrunk to fit the button
-        cairo_select_font_face(cr, "Sans", CAIRO_FONT_SLANT_NORMAL, CAIRO_FONT_WEIGHT_BOLD);
+        // label, shrunk to fit the button (laid out with Pango, which handles right-to-left text like Hebrew)
+        PangoLayout* layout = pango_cairo_create_layout(cr);
+        pango_cairo_context_set_resolution(pango_layout_get_context(layout), 72);
+        pango_layout_set_text(layout, states[i].name.c_str(), -1);
+        PangoFontDescription* font = pango_font_description_from_string("Sans Bold");
         double size = r.height * 0.45;
-        cairo_text_extents_t ext;
-        for (int k = 0; k < 12; k++) {
-            cairo_set_font_size(cr, size);
-            cairo_text_extents(cr, states[i].name.c_str(), &ext);
-            if (ext.width <= r.width * 0.9) {
+        PangoRectangle ink{}, logical{};
+        for (int k = 0; k < 14; k++) {
+            pango_font_description_set_absolute_size(font, size * PANGO_SCALE);
+            pango_layout_set_font_description(layout, font);
+            pango_layout_get_extents(layout, &ink, &logical);
+            if (logical.width / static_cast<double>(PANGO_SCALE) <= r.width * 0.9) {
                 break;
             }
             size *= 0.85;
         }
+        pango_font_description_free(font);
         if (on) {
             cairo_set_source_rgb(cr, 1, 1, 1);
         } else {
             cairo_set_source_rgb(cr, 0.12, 0.2, 0.35);
         }
-        cairo_move_to(cr, r.x + (r.width - ext.width) / 2 - ext.x_bearing,
-                      r.y + (r.height - ext.height) / 2 - ext.y_bearing);
-        cairo_show_text(cr, states[i].name.c_str());
+        const double tw = logical.width / static_cast<double>(PANGO_SCALE);
+        const double th = logical.height / static_cast<double>(PANGO_SCALE);
+        cairo_move_to(cr, r.x + (r.width - tw) / 2 - logical.x / static_cast<double>(PANGO_SCALE),
+                      r.y + (r.height - th) / 2 - logical.y / static_cast<double>(PANGO_SCALE));
+        pango_cairo_show_layout(cr, layout);
+        g_object_unref(layout);
     }
     cairo_restore(cr);
 }

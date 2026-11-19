@@ -249,8 +249,12 @@ auto XojPageView::onButtonPressEvent(const PositionInputData& pos) -> bool {
     XournalppCursor* cursor = xournal->getCursor();
     cursor->setMouseDown(true);
 
-    if (!this->replayingPress && findAnimationButton(x, y).first) {
-        this->heldButtonPress = pos;  // a tap on an animation button, unless the pointer moves
+    // Buttons of animations react to the pen and the highlighter (other tools, e.g. the eraser, work on what is
+    // drawn over them)
+    if (!this->replayingPress && (h->getToolType() == TOOL_PEN || h->getToolType() == TOOL_HIGHLIGHTER) &&
+        findAnimationButton(x, y).first) {
+        this->heldButtonPress = pos;  // a tap on an animation button, unless the pointer moves on
+        this->heldButtonMotions.clear();
         return true;
     }
 
@@ -546,16 +550,24 @@ auto XojPageView::onMotionNotifyEvent(const PositionInputData& pos) -> bool {
     }
 
     if (this->heldButtonPress) {
-        if (std::hypot(pos.x - this->heldButtonPress->x, pos.y - this->heldButtonPress->y) <= BUTTON_TAP_SLOP) {
+        const double moved = std::hypot(pos.x - this->heldButtonPress->x, pos.y - this->heldButtonPress->y);
+        const guint32 elapsed = pos.timestamp - this->heldButtonPress->timestamp;
+        if (moved <= BUTTON_TAP_MAX_MOVE && (elapsed < BUTTON_TAP_TIME || moved <= BUTTON_TAP_SLOP)) {
+            this->heldButtonMotions.push_back(pos);
             return true;
         }
-        // not a tap: start what the press would have started
+        // not a tap: start what the press would have started, with the movements so far
         PositionInputData press = *this->heldButtonPress;
+        std::vector<PositionInputData> motions = std::move(this->heldButtonMotions);
         this->heldButtonPress.reset();
+        this->heldButtonMotions.clear();
         this->currentSequenceDeviceId.reset();
         this->replayingPress = true;
         onButtonPressEvent(press);
         this->replayingPress = false;
+        for (const auto& m: motions) {
+            onMotionNotifyEvent(m);
+        }
     }
 
     double zoom = xournal->getZoom();
@@ -597,6 +609,7 @@ void XojPageView::onSequenceCancelEvent(DeviceId deviceId) {
     }
     currentSequenceDeviceId.reset();
     this->heldButtonPress.reset();
+    this->heldButtonMotions.clear();
 
     if (this->inputHandler) {
         this->inputHandler->onSequenceCancelEvent();
@@ -691,6 +704,7 @@ auto XojPageView::onButtonReleaseEvent(const PositionInputData& pos) -> bool {
     if (this->heldButtonPress) {
         // a tap on an animation button
         this->heldButtonPress.reset();
+        this->heldButtonMotions.clear();
         xournal->getCursor()->setMouseDown(false);
         const double zoom = xournal->getZoom();
         if (auto [img, index] = findAnimationButton(pos.x / zoom, pos.y / zoom); img) {

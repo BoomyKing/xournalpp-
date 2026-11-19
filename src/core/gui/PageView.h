@@ -341,11 +341,16 @@ private:
      * button; moved, it is replayed as a normal press (so that strokes can still start on a button).
      */
     std::optional<PositionInputData> heldButtonPress;
+    /// Pointer movements while a press on a button is held back (replayed if it turns out not to be a tap)
+    std::vector<PositionInputData> heldButtonMotions;
     bool replayingPress = false;
     /// The topmost visible animation button at a point (page coordinates): the image and the button's index
     std::pair<const Image*, int> findAnimationButton(double x, double y) const;
-    /// Pointer movement (in screen pixels) that turns a press on a button into a normal press
-    static constexpr double BUTTON_TAP_SLOP = 6.0;
+    /// A press on a button stays a tap while the pointer moves less than BUTTON_TAP_MAX_MOVE screen pixels, and after
+    /// BUTTON_TAP_TIME ms less than BUTTON_TAP_SLOP (a pen wobbles a little when tapping, a stroke keeps going)
+    static constexpr double BUTTON_TAP_MAX_MOVE = 24.0;
+    static constexpr double BUTTON_TAP_SLOP = 8.0;
+    static constexpr guint32 BUTTON_TAP_TIME = 300;
 
 
     /// Animated GIFs: while the page is visible, a timer shows their next frames (started when the page is painted)
